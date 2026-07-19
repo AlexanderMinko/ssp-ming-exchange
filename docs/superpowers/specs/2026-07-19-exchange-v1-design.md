@@ -12,7 +12,7 @@ Minimal SSP/Exchange simulator: one HTTP endpoint that accepts an OpenRTB 2.6 bi
 
 - Spring Boot 4.1, Java 25, **blocking MVC on virtual threads** (`spring.threads.virtual.enabled=true`). No WebFlux.
 - Outbound HTTP: `RestClient`.
-- **dsl-json 2.x** for the entire ORTB hot path (parse + serialize). Jackson remains on the classpath only for actuator/Spring internals and the logstash log encoder — it must not touch bid payloads.
+- **dsl-json 2.0.2** for the entire ORTB hot path (parse + serialize), wired the same way as the commercial ssp-backend: a custom `HttpMessageConverter` + typed controllers (see §10). Jackson remains on the classpath only for actuator/Spring internals and the logstash log encoder — it must not touch bid payloads.
 - MongoDB via `spring-boot-starter-data-mongodb`, database name **`ssp-exchange`**.
 - No structured-concurrency preview APIs; plain `CompletableFuture` on a virtual-thread executor.
 
@@ -67,8 +67,7 @@ Seeding: JSON fixtures in `src/main/resources/seed/` (also used by tests), loade
 Mini-layered: one small class per stage, wired by the controller. No pipeline framework.
 
 ```
-BidController (byte[] in/out)
- → OrtbCodec            dsl-json parse; 400 on failure
+BidController (typed: @RequestBody BidRequest → ResponseEntity<BidResponse>; dsl-json converter does the codec work, parse failure → 400 via exception handler)
  → SupplyResolver       accountKey → Account, body → Publisher; 403 on failure
  → RequestValidator     rules from §3; 400 on failure
  → BidderTargetingFilter status ACTIVE + format match + country match (device.geo.country, ISO-3166-1 alpha-3; a request with no country matches all bidders — the country filter applies only when the request carries one)
@@ -86,7 +85,7 @@ Format derivation per request: union over imps (`banner` present → BANNER, `vi
 - `effectiveTmax = clamp(request.tmax ?? 300, 100, 1000)` ms. Outbound `tmax = effectiveTmax − 50` (overhead reserve). Per-bidder `tmaxMs` override, if lower, wins for that bidder's request + timeout.
 - Outbound body: the parsed request re-serialized with dsl-json, with `tmax` overwritten. **Fields not covered by the model are dropped** (dsl-json compiled mode has no unknown-field capture); declared `ext` maps survive. Accepted for the simulator — mirrors an exchange rebuilding requests.
 - Fan-out: one `CompletableFuture.supplyAsync` per eligible bidder on a shared `Executors.newVirtualThreadPerTaskExecutor()` bean; gather with a single deadline of `effectiveTmax` (`orTimeout`/timed join). Late, failed, non-200, or unparseable bidders are dropped; each per-bidder outcome recorded as `BID | NO_BID(204) | TIMEOUT | ERROR` with latency for the event log + metrics.
-- `RestClient`: connect timeout 100 ms, read timeout 1000 ms (hard cap) at the factory; the real per-auction bound is the future deadline.
+- Outbound client (prod pattern): dedicated JDK `HttpClient` bean — HTTP/2, `Executors.newVirtualThreadPerTaskExecutor()`, connect timeout 100 ms — wrapped in `JdkClientHttpRequestFactory` with read timeout 1000 ms (hard cap); the real per-auction bound is the future deadline. `RestClient` built on that factory with converters cleared and replaced by the single `DslJsonHttpMessageConverter`, default `Content-Type`/`Accept: application/json` headers.
 - Failure isolation: one bidder's exception never affects others or the caller.
 
 ## 8. Auction: winner, macros, nurl
@@ -105,21 +104,29 @@ Format derivation per request: union over imps (`banner` present → BANNER, `vi
 - **Traces**: `micrometer-tracing-bridge-otel` + OTLP span exporter; server span per auction, child span per bidder call.
 - Exporters must degrade silently when no collector is reachable (local dev).
 
-## 10. dsl-json specifics (for the executor)
+## 10. dsl-json specifics (for the executor — mirror of the commercial ssp-backend wiring)
 
-- ORTB model classes: plain Java classes with **public mutable fields**, no Lombok on these (avoids Lombok↔dsl-json annotation-processor interplay), annotated `@CompiledJson`. Every object carries `public Map<String, Object> ext;`.
+- **Models**: ORTB classes annotated `@CompiledJson` + Lombok `@Getter @Setter @NoArgsConstructor @AllArgsConstructor`, private fields, wrapper types (`Integer`, `Double`) so absent ≠ 0. Pure ORTB wire-shape mirrors — no business fields. Every object carries `private Map<String, Object> ext;`.
 - Classes: `BidRequest, Imp, Banner, Video, Site, App, Publisher, Device, Geo, User, Source, Regs` / `BidResponse, SeatBid, Bid`. Only fields the simulator touches + `ext`.
-- Singleton `DslJson<Object>` bean (`Settings.basicSetup()`-style config with service-loader so compiled converters register). Serialization must omit null fields (dsl-json omit-defaults/minimal object format policy — executor verifies exact enum for the chosen version).
-- dsl-json annotation processor registered in `maven-compiler-plugin` `annotationProcessorPaths` alongside Lombok (Lombok first). Executor verifies whether the 2.x processor ships in the main artifact or needs `dsl-json-processor` for the pinned version.
-- Controller signature works on `byte[]` (`@RequestBody byte[]`, returns `ResponseEntity<byte[]>`); no `HttpMessageConverter` registration for ORTB types, no Jackson involvement.
-- Required unit test: round-trip a full sample 2.6 request fixture (deserialize → serialize → re-deserialize, assert stable).
+- **DslJson bean** (singleton):
+  ```java
+  new DslJson<>(Settings.withRuntime()
+      .allowArrayFormat(true)
+      .skipDefaultValues(true)   // write-only: omits null/default fields from serialized output
+      .includeServiceLoader());
+  ```
+- **Server side**: `DslJsonHttpMessageConverter extends AbstractHttpMessageConverter<Object>` — `supports`/`canRead`/`canWrite` delegate to `dslJson.canDeserialize`/`canSerialize`; `readInternal` → `dslJson.deserialize(type, body)` wrapping `IOException` in `HttpMessageNotReadableException`; `writeInternal` → `dslJson.serialize(object, body)`. Registered via `WebMvcConfigurer.configureMessageConverters(ServerBuilder builder) { builder.addCustomConverter(...) }` (Boot 4 API). Controllers stay typed (`@RequestBody BidRequest`, `ResponseEntity<BidResponse>`).
+- **Client side**: same converter instance type installed as the *only* converter on the bidder `RestClient` (§7).
+- **Build**: `com.dslplatform:dsl-json:2.0.2` as a normal dependency **and** as an entry in `maven-compiler-plugin` `annotationProcessorPaths`, ordered after Lombok (2.x ships the processor in the main artifact — no separate processor jar).
+- Utility `DslJsonSerializer` component (`serialize(T) → byte[]` via `ByteArrayOutputStream`) for places needing raw bytes (e.g. event logging).
+- Required unit test: round-trip a full sample 2.6 request fixture (deserialize → serialize → re-deserialize, assert stable; assert nulls omitted on write).
 
 ## 11. Package layout
 
 ```
 com.ming.sspexchange
 ├── api            BidController, GlobalExceptionHandler
-├── config         virtual-thread executor bean, RestClient, DslJson bean, OTLP, @ConfigurationProperties
+├── config         DslJson bean, DslJsonHttpMessageConverter, WebMvcConfig, bidder HttpClient/RestClient, virtual-thread executor bean, OTLP, @ConfigurationProperties
 ├── model
 │   ├── openrtb    dsl-json classes (§10)
 │   └── entity     AccountEntity, PublisherEntity, BidderEntity (Spring Data)
@@ -136,8 +143,8 @@ com.ming.sspexchange
 ## 12. pom.xml changes
 
 - Remove: `spring-boot-starter-mongodb`, `spring-boot-starter-mongodb-test` (driver-only starters, redundant next to `data-mongodb`).
-- Keep: `webmvc`, `restclient`, `data-mongodb` + their test starters, Lombok (entities/services only).
-- Add: `spring-boot-starter-actuator`, `com.dslplatform:dsl-json` (2.x, pinned), `micrometer-registry-otlp`, `micrometer-tracing-bridge-otel`, `io.opentelemetry:opentelemetry-exporter-otlp`, `net.logstash.logback:logstash-logback-encoder`; test: `spring-boot-testcontainers`, `org.testcontainers:mongodb` + `junit-jupiter`, WireMock (`org.wiremock`, artifact compatible with Boot 4 / Jetty 12).
+- Keep: `webmvc`, `restclient`, `data-mongodb` + their test starters, Lombok (used on ORTB DTOs too, per §10).
+- Add: `spring-boot-starter-actuator`, `com.dslplatform:dsl-json:2.0.2` (dependency **and** `annotationProcessorPaths` entry after Lombok), `micrometer-registry-otlp`, `micrometer-tracing-bridge-otel`, `io.opentelemetry:opentelemetry-exporter-otlp`, `net.logstash.logback:logstash-logback-encoder`; test: `spring-boot-testcontainers`, `org.testcontainers:mongodb` + `junit-jupiter`, WireMock (`org.wiremock`, artifact compatible with Boot 4 / Jetty 12).
 - `application.properties` → `application.yaml`; `spring.threads.virtual.enabled=true`; Mongo URI + db `ssp-exchange`; OTLP endpoints via env-overridable properties.
 
 ## 13. Testing
