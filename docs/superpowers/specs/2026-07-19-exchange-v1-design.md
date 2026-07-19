@@ -12,7 +12,7 @@ Minimal SSP/Exchange simulator: one HTTP endpoint that accepts an OpenRTB 2.6 bi
 
 - Spring Boot 4.1, Java 25, **blocking MVC on virtual threads** (`spring.threads.virtual.enabled=true`). No WebFlux.
 - Outbound HTTP: `RestClient`.
-- **dsl-json 2.0.2** for the entire ORTB hot path (parse + serialize), wired the same way as the commercial ssp-backend: a custom `HttpMessageConverter` + typed controllers (see §10). Jackson remains on the classpath only for actuator/Spring internals and the logstash log encoder — it must not touch bid payloads.
+- **dsl-json 2.0.2** for the entire ORTB hot path (parse + serialize), wired the same way as the commercial ssp-backend: a custom `HttpMessageConverter` + typed controllers (see §10). Jackson remains on the classpath only for actuator/Spring internals — it must not touch bid payloads.
 - MongoDB via `spring-boot-starter-data-mongodb`, database name **`ssp-exchange`**.
 - No structured-concurrency preview APIs; plain `CompletableFuture` on a virtual-thread executor.
 
@@ -99,7 +99,7 @@ Format derivation per request: union over imps (`banner` present → BANNER, `vi
 
 ## 9. Event log & observability
 
-- **Auction event log**: exactly one structured JSON line per auction on logger `AUCTION_EVENTS` (logstash-logback-encoder): auctionId, accountKey, publisherId, requested formats, eligible bidder names, per-bidder `{name, outcome, latencyMs, price?}`, winner + clearing price, response status, total latency. Loki-ready; not stored in Mongo.
+- **Auction event log**: exactly one structured JSON line per auction on logger `AUCTION_EVENTS` (event record serialized with dsl-json via `DslJsonSerializer`, logged through a dedicated `%msg%n` appender — no logstash encoder needed): auctionId, accountKey, publisherId, requested formats, eligible bidder names, per-bidder `{name, outcome, latencyMs, price?}`, winner + clearing price, response status, total latency. Loki-ready; not stored in Mongo.
 - **Metrics** (Micrometer → OTLP via `micrometer-registry-otlp`): counters `auctions_total`, `nobid_total{reason}`, `bidder_requests_total{bidder,outcome}`, `wins_total{bidder}`; timers `auction_duration`, `bidder_call_duration{bidder}`.
 - **Traces**: `micrometer-tracing-bridge-otel` + OTLP span exporter; server span per auction, child span per bidder call.
 - Exporters must degrade silently when no collector is reachable (local dev).
@@ -144,7 +144,7 @@ com.ming.sspexchange
 
 - Remove: `spring-boot-starter-mongodb`, `spring-boot-starter-mongodb-test` (driver-only starters, redundant next to `data-mongodb`).
 - Keep: `webmvc`, `restclient`, `data-mongodb` + their test starters, Lombok (used on ORTB DTOs too, per §10).
-- Add: `spring-boot-starter-actuator`, `com.dslplatform:dsl-json:2.0.2` (dependency **and** `annotationProcessorPaths` entry after Lombok), `micrometer-registry-otlp`, `micrometer-tracing-bridge-otel`, `io.opentelemetry:opentelemetry-exporter-otlp`, `net.logstash.logback:logstash-logback-encoder`; test: `spring-boot-testcontainers`, `org.testcontainers:mongodb` + `junit-jupiter`, WireMock (`org.wiremock`, artifact compatible with Boot 4 / Jetty 12).
+- Add: `spring-boot-starter-actuator`, `com.dslplatform:dsl-json:2.0.2` (dependency **and** `annotationProcessorPaths` entry after Lombok), `micrometer-registry-otlp`, `micrometer-tracing-bridge-otel`, `io.opentelemetry:opentelemetry-exporter-otlp`; test: `spring-boot-testcontainers`, `org.testcontainers:mongodb` + `junit-jupiter`, WireMock (`org.wiremock`, artifact compatible with Boot 4 / Jetty 12).
 - `application.properties` → `application.yaml`; `spring.threads.virtual.enabled=true`; Mongo URI + db `ssp-exchange`; OTLP endpoints via env-overridable properties.
 
 ## 13. Testing
