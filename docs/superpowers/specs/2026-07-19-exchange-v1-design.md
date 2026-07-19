@@ -15,6 +15,7 @@ Minimal SSP/Exchange simulator: one HTTP endpoint that accepts an OpenRTB 2.6 bi
 - **dsl-json 2.0.2** for the entire ORTB hot path (parse + serialize), wired the same way as the commercial ssp-backend: a custom `HttpMessageConverter` + typed controllers (see §10). Jackson remains on the classpath only for actuator/Spring internals — it must not touch bid payloads.
 - MongoDB via `spring-boot-starter-data-mongodb`, database name **`ssp-exchange`**.
 - No structured-concurrency preview APIs; plain `CompletableFuture` on a virtual-thread executor.
+- Code convention: null checks via `java.util.Objects.isNull` / `Objects.nonNull` — never bare `== null` / `!= null`.
 
 ## 3. HTTP contract
 
@@ -74,8 +75,8 @@ BidController (typed: @RequestBody BidRequest → ResponseEntity<BidResponse>; d
  → BidRequestForwarder  builds per-bidder outbound request (see §7)
  → FanOutService        parallel calls with a single auction deadline
  → WinnerSelector       first-price winner (see §8)
- → ResponseBuilder      single-seat BidResponse + adm macro substitution
- → async after response: WinNotifier (nurl), AuctionEventLogger (always)
+ → ResponseBuilder      single-seat BidResponse + adm/nurl macro substitution
+ → async after response: AuctionEventLogger (always)
 ```
 
 Format derivation per request: union over imps (`banner` present → BANNER, `video` → VIDEO). A bidder is eligible if its `targeting.formats` intersects the request's formats.
@@ -94,7 +95,7 @@ Format derivation per request: union over imps (`banner` present → BANNER, `vi
 - **First-price**: winner = max price (tie → first received); clearing price = bid price.
 - Macros substituted in `adm` and `nurl`: `${AUCTION_ID}`, `${AUCTION_BID_ID}`, `${AUCTION_IMP_ID}`, `${AUCTION_SEAT_ID}`, `${AUCTION_PRICE}`.
 - Response: `id` = request id, `cur` = "USD", one `seatbid` with the winning bidder's `seat`, one `bid`.
-- `nurl`: fired server-side after the response is committed — fire-and-forget GET on a virtual thread, 2 s timeout, outcome only logged/metered. (Prod note: often client-side; here it exercises the loop for the dummy DSP later.)
+- `nurl`: the exchange does **not** fire it. It is returned macro-substituted inside the winning bid; the supply-partner SSP (later phase) triggers it on win.
 - No loss notices, no `burl`.
 
 ## 9. Event log & observability
@@ -136,8 +137,7 @@ com.ming.sspexchange
     ├── supply     SupplyResolver, RequestValidator
     ├── demand     BidderTargetingFilter, BidRequestForwarder, FanOutService, BidderClient
     ├── auction    WinnerSelector, ResponseBuilder, MacroProcessor
-    ├── event      AuctionEventLogger
-    └── notify     WinNotifier
+    └── event      AuctionEventLogger
 ```
 
 ## 12. pom.xml changes
@@ -150,24 +150,19 @@ com.ming.sspexchange
 ## 13. Testing
 
 - **Unit**: WinnerSelector (floor filter, tie, empty, wrong impid), BidderTargetingFilter (format/country/status matrix, missing geo), MacroProcessor, tmax clamping, SupplyResolver (403 cases), dsl-json round-trip (§10).
-- **Integration** (`@SpringBootTest` + Testcontainers Mongo + WireMock): two stubbed bidders — one bids, one delays past tmax → assert 200 + winner correctness + nurl request received by stub; no-bidders-bid → 204; bad account → 403; malformed body → 400. Seed fixtures reused from `src/main/resources/seed/`.
+- **Integration** (`@SpringBootTest` + Testcontainers Mongo + WireMock): two stubbed bidders — one bids, one delays past tmax → assert 200 + winner correctness + macro-substituted `adm`/`nurl` in the returned bid; no-bidders-bid → 204; bad account → 403; malformed body → 400. Seed fixtures reused from `src/main/resources/seed/`.
 - User runs all builds/tests: plan must hand over exact `./mvnw` commands.
 
 ## 14. Deployment
 
 - **Docker**: multi-stage (JDK 25 build → JRE 25 runtime), non-root. Push to ECR `140023370575.dkr.ecr.eu-central-1.amazonaws.com/eks-dev/app`, tag `exchange-<version>`.
-- **K8s, namespace `production`** (this service; ssp/dsp get their own namespaces later):
-  - `Deployment` (1 replica, readiness/liveness on actuator health probes, resource requests/limits, OTLP endpoint env),
-  - `Service` (ClusterIP),
-  - `HTTPRoute` attached to the existing Gateway (gateway name/namespace taken from the infra repo — placeholder in manifests, user fills in),
-  - MongoDB: single-replica `Deployment` + PVC + `Service mongodb` in `production` (simulator-grade; prod would be managed/Atlas),
-  - seed `Job` (mongosh image + fixtures ConfigMap).
+- **K8s manifests: deferred** — authored later by the user. Decisions that stand: namespace `production` for this service (ssp/dsp get their own later), edge via Gateway API `HTTPRoute`, in-cluster single-replica MongoDB, health probes on actuator endpoints.
 - **Local dev**: `docker-compose.yml` (mongo + auto-seed container); app via `./mvnw spring-boot:run`.
-- User executes all deploy commands; plan provides them (docker build/push, kubectl apply order).
+- User executes all build/deploy commands; plan provides docker build/push commands.
 
 ## 15. Out of scope (v1)
 
-Second-price, deals/PMP, loss notices (`lurl`), `burl`/billing, IVT, privacy enforcement (TCF/GPP strings pass through `ext`/`regs` untouched), currency conversion (USD only), multi-imp awards (first imp only), admin CRUD API, Kafka/eventing, user matching/cookie sync.
+Second-price, deals/PMP, server-side win-notice firing (`nurl` returned in the bid; supply SSP triggers it later), loss notices (`lurl`), `burl`/billing, IVT, privacy enforcement (TCF/GPP strings pass through `ext`/`regs` untouched), currency conversion (USD only), multi-imp awards (first imp only), admin CRUD API, Kafka/eventing, user matching/cookie sync, K8s manifests (user authors them later).
 
 ## 16. Sequencing after v1
 
