@@ -49,10 +49,13 @@ Uniqueness: `(accountId, publisherId)`.
 
 ### `bidders`
 ```
-{ _id, name, seat, endpoint (absolute URL), status,
+{ _id, name, seat, endpoint (absolute URL, or "mock:<name>" for built-in mock demand), status,
   targeting: { formats: ["BANNER","VIDEO"], countries: [] },   // empty countries = all
-  tmaxMs (optional per-bidder override) }
+  tmaxMs (optional per-bidder override),
+  mock (required when endpoint is mock:*): { price, latencyMs (opt, default 0), bidRate (opt 0.0–1.0, default 1.0) } }
 ```
+
+**Mock demand (until the dummy DSP exists):** a bidder whose `endpoint` starts with `mock:` is served in-process by a `MockBidderClient` instead of HTTP — it sleeps `latencyMs` (virtual thread; still subject to the fan-out deadline, so latency > timeout genuinely produces TIMEOUT), bids with probability `bidRate`, and fabricates a single-bid `BidResponse` at the fixed `price` with macro placeholders in `adm`/`nurl`. Everything downstream (targeting, auction, floors, macros, event log, metrics) treats mock and HTTP bidders identically. Deploying the real DSP later = updating `endpoint` in Mongo; zero code changes.
 
 Seeding: JSON fixtures in `src/main/resources/seed/` (also used by tests), loaded via `scripts/seed.sh` (mongosh). Fixtures: 2 accounts, 3 publishers, 3 bidders (distinct targeting so filtering is demonstrable).
 
@@ -73,7 +76,8 @@ BidController (typed: @RequestBody BidRequest → ResponseEntity<BidResponse>; d
  → RequestValidator     rules from §3; 400 on failure
  → BidderTargetingFilter status ACTIVE + format match + country match (device.geo.country, ISO-3166-1 alpha-3; a request with no country matches all bidders — the country filter applies only when the request carries one)
  → BidRequestForwarder  builds per-bidder outbound request (see §7)
- → FanOutService        parallel calls with a single auction deadline
+ → FanOutService        parallel calls with a single auction deadline; per-bidder dispatch:
+                         endpoint mock:* → in-process MockBidderClient, else HTTP BidderClient
  → WinnerSelector       first-price winner (see §8)
  → ResponseBuilder      single-seat BidResponse + adm/nurl macro substitution
  → async after response: AuctionEventLogger (always)
@@ -149,15 +153,15 @@ com.ming.sspexchange
 
 ## 13. Testing
 
-- **Unit**: WinnerSelector (floor filter, tie, empty, wrong impid), BidderTargetingFilter (format/country/status matrix, missing geo), MacroProcessor, tmax clamping, SupplyResolver (403 cases), dsl-json round-trip (§10).
-- **Integration** (`@SpringBootTest` + Testcontainers Mongo + WireMock): two stubbed bidders — one bids, one delays past tmax → assert 200 + winner correctness + macro-substituted `adm`/`nurl` in the returned bid; no-bidders-bid → 204; bad account → 403; malformed body → 400. Seed fixtures reused from `src/main/resources/seed/`.
+- **Unit**: WinnerSelector (floor filter, tie, empty, wrong impid), BidderTargetingFilter (format/country/status matrix, missing geo), MacroProcessor, tmax clamping, SupplyResolver (403 cases), MockBidderClient (bid/no-config/bidRate-0/fabricated fields; latency-beyond-deadline → TIMEOUT via fan-out), dsl-json round-trip (§10).
+- **Integration** (`@SpringBootTest` + Testcontainers Mongo + WireMock): two stubbed bidders — one bids, one delays past tmax → assert 200 + winner correctness + macro-substituted `adm`/`nurl` in the returned bid; mock-only demand → 200 without any HTTP bidder; no-bidders-bid → 204; bad account → 403; malformed body → 400. Seed fixtures reused from `src/main/resources/seed/`.
 - User runs all builds/tests: plan must hand over exact `./mvnw` commands.
 
 ## 14. Deployment
 
 - **Docker**: multi-stage (JDK 25 build → JRE 25 runtime), non-root. Push to ECR `140023370575.dkr.ecr.eu-central-1.amazonaws.com/eks-dev/app`, tag `exchange-<version>`.
 - **K8s manifests: deferred** — authored later by the user. Decisions that stand: namespace `production` for this service (ssp/dsp get their own later), edge via Gateway API `HTTPRoute`, in-cluster single-replica MongoDB, health probes on actuator endpoints.
-- **Local dev**: `docker-compose.yml` (mongo + auto-seed container); app via `./mvnw spring-boot:run`.
+- **Local dev**: `docker-compose.yml` (mongo + auto-seed container); app via `./mvnw spring-boot:run`. Seed ships mock bidders, so the exchange fills (200) from the very first run — no DSP required.
 - User executes all build/deploy commands; plan provides docker build/push commands.
 
 ## 15. Out of scope (v1)
@@ -166,6 +170,6 @@ Second-price, deals/PMP, server-side win-notice firing (`nurl` returned in the b
 
 ## 16. Sequencing after v1
 
-1. Dummy DSP service (own repo/namespace): configurable bid behavior (price ranges, no-bid rate, latency jitter) — becomes the target of `bidders.endpoint`.
+1. Dummy DSP service (own repo/namespace): configurable bid behavior (price ranges, no-bid rate, latency jitter) — becomes the target of `bidders.endpoint`, replacing the built-in `mock:` bidders via a Mongo config update only.
 2. Dummy supply SSP: traffic generator posting synthetic 2.6 requests at the exchange.
 3. Wire end-to-end across namespaces; then LGTM dashboards off the OTLP/AUCTION_EVENTS data.
