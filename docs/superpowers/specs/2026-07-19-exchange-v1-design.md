@@ -16,6 +16,7 @@ Minimal SSP/Exchange simulator: one HTTP endpoint that accepts an OpenRTB 2.6 bi
 - MongoDB via `spring-boot-starter-data-mongodb`, database name **`ssp-exchange`**.
 - No structured-concurrency preview APIs; plain `CompletableFuture` on a virtual-thread executor.
 - Code convention: null checks via `java.util.Objects.isNull` / `Objects.nonNull` — never bare `== null` / `!= null`.
+- Code convention: copies/mappings of stateful model objects go through **MapStruct** (`OrtbMapper`, componentModel spring) — no hand-rolled field-by-field copy methods. Processor chain mirrors the commercial ssp-backend: lombok → lombok-mapstruct-binding → mapstruct-processor → dsl-json.
 
 ## 3. HTTP contract
 
@@ -88,7 +89,7 @@ Format derivation per request: union over imps (`banner` present → BANNER, `vi
 ## 7. Outbound requests, concurrency, tmax
 
 - `effectiveTmax = clamp(request.tmax ?? 300, 100, 1000)` ms. Outbound `tmax = effectiveTmax − 50` (overhead reserve). Per-bidder `tmaxMs` override, if lower, wins for that bidder's request + timeout.
-- Outbound body: the parsed request re-serialized with dsl-json, with `tmax` overwritten. **Fields not covered by the model are dropped** (dsl-json compiled mode has no unknown-field capture); declared `ext` maps survive. Accepted for the simulator — mirrors an exchange rebuilding requests.
+- Outbound body: a MapStruct copy of the parsed request (`OrtbMapper.copyWithTmax`) with `tmax` overwritten — nested beans shared by reference (read-only downstream), collections re-wrapped. **Fields not covered by the model are dropped** (dsl-json compiled mode has no unknown-field capture); declared `ext` maps survive. Accepted for the simulator — mirrors an exchange rebuilding requests.
 - Fan-out: one `CompletableFuture.supplyAsync` per eligible bidder on a shared `Executors.newVirtualThreadPerTaskExecutor()` bean; gather with a single deadline of `effectiveTmax` (`orTimeout`/timed join). Late, failed, non-200, or unparseable bidders are dropped; each per-bidder outcome recorded as `BID | NO_BID(204) | TIMEOUT | ERROR` with latency for the event log + metrics.
 - Outbound client (prod pattern): dedicated JDK `HttpClient` bean — HTTP/2, `Executors.newVirtualThreadPerTaskExecutor()`, connect timeout 100 ms — wrapped in `JdkClientHttpRequestFactory` with read timeout 1000 ms (hard cap); the real per-auction bound is the future deadline. `RestClient` built on that factory with converters cleared and replaced by the single `DslJsonHttpMessageConverter`, default `Content-Type`/`Accept: application/json` headers.
 - Failure isolation: one bidder's exception never affects others or the caller.
@@ -97,7 +98,7 @@ Format derivation per request: union over imps (`banner` present → BANNER, `vi
 
 - Candidate bids: flatten all `seatbid[].bid[]`; keep bids where `impid` equals the **first imp's id** (v1 awards only the first imp — multi-imp is out of scope), `price ≥ imp.bidfloor` (default 0), `adm` non-empty.
 - **First-price**: winner = max price (tie → first received); clearing price = bid price.
-- Macros substituted in `adm` and `nurl`: `${AUCTION_ID}`, `${AUCTION_BID_ID}`, `${AUCTION_IMP_ID}`, `${AUCTION_SEAT_ID}`, `${AUCTION_PRICE}`.
+- Macros substituted in `adm` and `nurl`: `${AUCTION_ID}`, `${AUCTION_BID_ID}`, `${AUCTION_IMP_ID}`, `${AUCTION_SEAT_ID}`, `${AUCTION_PRICE}`. Substitution operates on a MapStruct copy of the winning bid (`OrtbMapper.copy`) — the bidder's original response object is never mutated.
 - Response: `id` = request id, `cur` = "USD", one `seatbid` with the winning bidder's `seat`, one `bid`.
 - `nurl`: the exchange does **not** fire it. It is returned macro-substituted inside the winning bid; the supply-partner SSP (later phase) triggers it on win.
 - No loss notices, no `burl`.
@@ -139,8 +140,9 @@ com.ming.sspexchange
 ├── cache          PartnerConfigCache (+ snapshot record, refresher)
 └── service
     ├── supply     SupplyResolver, RequestValidator
-    ├── demand     BidderTargetingFilter, BidRequestForwarder, FanOutService, BidderClient
+    ├── demand     BidderTargetingFilter, BidRequestForwarder, FanOutService, BidderClient, MockBidderClient
     ├── auction    WinnerSelector, ResponseBuilder, MacroProcessor
+    ├── mapper     OrtbMapper (MapStruct)
     └── event      AuctionEventLogger
 ```
 
@@ -148,7 +150,7 @@ com.ming.sspexchange
 
 - Remove: `spring-boot-starter-mongodb`, `spring-boot-starter-mongodb-test` (driver-only starters, redundant next to `data-mongodb`).
 - Keep: `webmvc`, `restclient`, `data-mongodb` + their test starters, Lombok (used on ORTB DTOs too, per §10).
-- Add: `spring-boot-starter-actuator`, `com.dslplatform:dsl-json:2.0.2` (dependency **and** `annotationProcessorPaths` entry after Lombok), `micrometer-registry-otlp`, `micrometer-tracing-bridge-otel`, `io.opentelemetry:opentelemetry-exporter-otlp`; test: `spring-boot-testcontainers`, `org.testcontainers:mongodb` + `junit-jupiter`, WireMock (`org.wiremock`, artifact compatible with Boot 4 / Jetty 12).
+- Add: `spring-boot-starter-actuator`, `com.dslplatform:dsl-json:2.0.2`, `org.mapstruct:mapstruct` (with `mapstruct-processor` + `lombok-mapstruct-binding` in `annotationProcessorPaths`, ordered lombok → binding → mapstruct → dsl-json), `micrometer-registry-otlp`, `micrometer-tracing-bridge-otel`, `io.opentelemetry:opentelemetry-exporter-otlp`; test: `spring-boot-testcontainers`, `org.testcontainers:mongodb` + `junit-jupiter`, WireMock (`org.wiremock`, artifact compatible with Boot 4 / Jetty 12).
 - `application.properties` → `application.yaml`; `spring.threads.virtual.enabled=true`; Mongo URI + db `ssp-exchange`; OTLP endpoints via env-overridable properties.
 
 ## 13. Testing
