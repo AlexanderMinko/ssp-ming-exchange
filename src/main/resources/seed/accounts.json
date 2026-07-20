@@ -1,0 +1,4 @@
+[
+  {"_id": "acc-amz", "accountKey": "amz-key-001", "name": "Amazon APS", "type": "API", "status": "ACTIVE"},
+  {"_id": "acc-liftoff", "accountKey": "liftoff-key-001", "name": "Liftoff", "type": "SDK", "status": "ACTIVE"}
+]

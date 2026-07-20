@@ -1,0 +1,13 @@
+[
+  {"_id": "bidder-alpha", "name": "alpha", "seat": "seat-alpha",
+   "endpoint": "mock:alpha", "status": "ACTIVE",
+   "targeting": {"formats": ["BANNER", "VIDEO"], "countries": []},
+   "mock": {"price": 2.5, "latencyMs": 20, "bidRate": 1.0}},
+  {"_id": "bidder-beta", "name": "beta", "seat": "seat-beta",
+   "endpoint": "mock:beta", "status": "ACTIVE",
+   "targeting": {"formats": ["BANNER"], "countries": ["USA"]}, "tmaxMs": 200,
+   "mock": {"price": 1.2, "latencyMs": 50, "bidRate": 0.8}},
+  {"_id": "bidder-gamma", "name": "gamma", "seat": "seat-gamma",
+   "endpoint": "http://dsp.dsp.svc.cluster.local:8080/rtb/bid", "status": "PAUSED",
+   "targeting": {"formats": ["BANNER", "VIDEO"], "countries": []}}
+]

@@ -1,0 +1,25 @@
+services:
+  mongo:
+    image: mongo:7
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+      - ./src/main/resources/seed:/seed:ro
+
+  mongo-seed:
+    image: mongo:7
+    depends_on:
+      - mongo
+    volumes:
+      - ./src/main/resources/seed:/seed:ro
+    command: >
+      bash -c "
+        until mongosh --host mongo --eval 'db.runCommand({ping:1})' >/dev/null 2>&1; do sleep 1; done &&
+        mongoimport --host mongo --db ssp-exchange --collection accounts   --file /seed/accounts.json   --jsonArray --drop &&
+        mongoimport --host mongo --db ssp-exchange --collection publishers --file /seed/publishers.json --jsonArray --drop &&
+        mongoimport --host mongo --db ssp-exchange --collection bidders    --file /seed/bidders.json    --jsonArray --drop
+      "
+
+volumes:
+  mongo-data:

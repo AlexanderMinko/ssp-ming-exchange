@@ -1,0 +1,5 @@
+[
+  {"_id": "pub-doc-1", "accountId": "acc-amz", "publisherId": "pub-100", "name": "News App Pub", "status": "ACTIVE"},
+  {"_id": "pub-doc-2", "accountId": "acc-amz", "publisherId": "pub-200", "name": "Paused Pub", "status": "PAUSED"},
+  {"_id": "pub-doc-3", "accountId": "acc-liftoff", "publisherId": "pub-300", "name": "Game Pub", "status": "ACTIVE"}
+]

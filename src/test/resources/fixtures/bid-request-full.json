@@ -1,0 +1,20 @@
+{
+  "id": "req-1",
+  "tmax": 350,
+  "cur": ["USD"],
+  "imp": [
+    {"id": "imp-1", "bidfloor": 0.5, "bidfloorcur": "USD", "secure": 1, "tagid": "tag-9",
+     "banner": {"w": 320, "h": 50, "pos": 1, "ext": {"foo": "bar"}}},
+    {"id": "imp-2",
+     "video": {"mimes": ["video/mp4"], "minduration": 5, "maxduration": 30, "w": 640, "h": 480, "protocols": [2, 3]}}
+  ],
+  "app": {"id": "app-1", "name": "Demo App", "bundle": "com.demo.app", "storeurl": "https://play.example/app",
+          "publisher": {"id": "pub-100", "name": "Demo Pub"}},
+  "device": {"ua": "Mozilla/5.0", "ip": "203.0.113.7", "os": "Android", "osv": "14", "devicetype": 4,
+             "ifa": "38400000-8cf0-11bd-b23e-10b96e40000d",
+             "geo": {"lat": 52.52, "lon": 13.405, "country": "DEU", "city": "Berlin", "type": 2}},
+  "user": {"id": "u-1", "buyeruid": "dsp-u-9"},
+  "source": {"fd": 1, "tid": "txn-1"},
+  "regs": {"coppa": 0, "gdpr": 1, "ext": {"us_privacy": "1---"}},
+  "ext": {"exchange": {"test": true}}
+}
