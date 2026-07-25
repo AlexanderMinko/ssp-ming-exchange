@@ -2,15 +2,18 @@
 # Phase 12.2 — build the app image and push it to ECR, triggered by a version tag.
 # Auth is OIDC: no AWS keys stored in GitHub. The role + trust live in infra/08-github-oidc.tf.
 #
-# Release flow (you do this):
-#   git tag v0.1.0 && git push origin v0.1.0   →  this workflow builds & pushes  eks-dev/app:v0.1.0
+# Build flow (LEARNING — trigger on main push):
+#   git push origin main   →  this workflow builds & pushes  eks-dev/app:main
 
 name: release
 
 on:
   push:
-    tags:
-      - "v*" # v0.1.0, v1.2.3, … — the SAME shape the IAM trust policy allows (refs/tags/v*)
+    branches:
+      - main # LEARNING: run on every push to main. Requires the IAM trust to allow refs/heads/main.
+  # Adds the "Run workflow" button in the Actions tab (and `gh workflow run`). The ref you pick
+  # there becomes github.ref_name AND the OIDC sub — so only main / v* tags pass the IAM trust.
+  workflow_dispatch:
 
 # Never run two releases for the same tag at once.
 concurrency:
@@ -49,7 +52,8 @@ jobs:
         id: ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      # github.ref_name is the tag name ("v0.1.0") on a tag push — that IS the image version.
+      # github.ref_name is the branch ("main") on a branch push, so this tags eks-dev/app:main
+      # and overwrites it each push. For distinct images per commit, use ${{ github.sha }} instead.
       - name: Build and push image
         env:
           REGISTRY: ${{ steps.ecr.outputs.registry }}
