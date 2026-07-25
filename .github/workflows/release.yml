@@ -3,7 +3,7 @@
 # Auth is OIDC: no AWS keys stored in GitHub. The role + trust live in infra/08-github-oidc.tf.
 #
 # Build flow (LEARNING — trigger on main push):
-#   git push origin main   →  this workflow builds & pushes  eks-dev/app:main
+#   git push origin main   →  builds & pushes  eks-dev/app:0.0.<run_number>  (auto-incrementing)
 
 name: release
 
@@ -52,12 +52,14 @@ jobs:
         id: ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      # github.ref_name is the branch ("main") on a branch push, so this tags eks-dev/app:main
-      # and overwrites it each push. For distinct images per commit, use ${{ github.sha }} instead.
+      # Incremental version per build: github.run_number is a monotonic counter for this workflow,
+      # so each push to main produces a unique tag (0.0.1, 0.0.2, …). Works with the IMMUTABLE ECR
+      # repo (a tag is never re-pushed) and with GitOps (a new tag = a real diff Argo CD can sync).
+      # Bump the "0.0." base by hand for a minor/major; run_number drives the patch number.
       - name: Build and push image
         env:
           REGISTRY: ${{ steps.ecr.outputs.registry }}
-          VERSION: ${{ github.ref_name }}
+          VERSION: 0.0.${{ github.run_number }}
         run: |
           IMAGE="$REGISTRY/$ECR_REPOSITORY:$VERSION"
           echo "Building $IMAGE"
