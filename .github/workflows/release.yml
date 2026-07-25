@@ -1,0 +1,62 @@
+# .github/workflows/release.yml
+# Phase 12.2 — build the app image and push it to ECR, triggered by a version tag.
+# Auth is OIDC: no AWS keys stored in GitHub. The role + trust live in infra/08-github-oidc.tf.
+#
+# Release flow (you do this):
+#   git tag v0.1.0 && git push origin v0.1.0   →  this workflow builds & pushes  eks-dev/app:v0.1.0
+
+name: release
+
+on:
+  push:
+    tags:
+      - "v*" # v0.1.0, v1.2.3, … — the SAME shape the IAM trust policy allows (refs/tags/v*)
+
+# Never run two releases for the same tag at once.
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+# Least privilege. id-token:write is what lets the job mint the GitHub OIDC JWT; without it,
+# assuming the AWS role fails. contents:read is just for checkout. Nothing else is granted.
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: eu-central-1
+  ECR_REPOSITORY: eks-dev/app # matches aws_ecr_repository.app  ("${cluster_name}/app")
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Exchanges the OIDC token for ~1h AWS creds by calling AssumeRoleWithWebIdentity.
+      # AWS_ROLE_ARN is a repo VARIABLE (not a secret — the ARN isn't sensitive):
+      #   Settings → Secrets and variables → Actions → Variables → AWS_ROLE_ARN
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # docker login to ECR with those temp creds. Calls ecr:GetAuthorizationToken (the one
+      # account-wide permission) and outputs the registry host for the build step.
+      - name: Login to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # github.ref_name is the tag name ("v0.1.0") on a tag push — that IS the image version.
+      - name: Build and push image
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          IMAGE="$REGISTRY/$ECR_REPOSITORY:$VERSION"
+          echo "Building $IMAGE"
+          docker build -t "$IMAGE" .
+          docker push "$IMAGE"
+          echo "::notice title=Pushed::$IMAGE"

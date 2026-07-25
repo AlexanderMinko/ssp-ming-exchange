@@ -3,21 +3,21 @@ spring:
     name: exchange
   threads:
     virtual:
-      enabled: true
+      enabled: ${SPRING_THREADS_VIRTUAL_ENABLED:true}
   mongodb:
-    uri: ${MONGODB_URI:mongodb://localhost:27017/ssp-exchange}
+    uri: mongodb://${MONGO_USER}:${MONGO_PASSWORD}@${MONGO_HOSTS}/${MONGO_DATABASE_NAME:ssp-exchange}${MONGO_PARAMS:?authSource=admin}
 
 exchange:
-  config-refresh-ms: 30000
+  config-refresh-ms: ${EXCHANGE_CONFIG_REFRESH_MS:30000}
   bidder:
-    connect-timeout-ms: 100
-    read-timeout-ms: 1000
+    connect-timeout-ms: ${EXCHANGE_BIDDER_CONNECT_TIMEOUT_MS:100}
+    read-timeout-ms: ${EXCHANGE_BIDDER_READ_TIMEOUT_MS:1000}
 
 management:
   endpoints:
     web:
       exposure:
-        include: health,info,metrics
+        include: ${MANAGEMENT_ENDPOINTS_EXPOSURE:health,info,metrics}
   endpoint:
     health:
       probes:
@@ -32,4 +32,4 @@ management:
   tracing:
     enabled: ${TRACING_ENABLED:false}
     sampling:
-      probability: 1.0
+      probability: ${TRACING_SAMPLING_PROBABILITY:1.0}
