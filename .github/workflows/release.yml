@@ -3,7 +3,9 @@
 # Auth is OIDC: no AWS keys stored in GitHub. The role + trust live in infra/08-github-oidc.tf.
 #
 # Build flow (LEARNING — trigger on main push):
-#   git push origin main   →  builds & pushes  eks-dev/app:0.0.<run_number>  (auto-incrementing)
+#   git push origin main  →  build+push eks-dev/app:0.0.<run_number>  →  bump the tag in the
+#   CONFIG repo (ssp-exchange-helm)  →  Argo CD syncs → deploys. Git stays the source of truth.
+#   (Chosen over Argo CD Image Updater: simpler, immediate, and CI already knows the exact tag.)
 
 name: release
 
@@ -66,3 +68,32 @@ jobs:
           docker build -t "$IMAGE" .
           docker push "$IMAGE"
           echo "::notice title=Pushed::$IMAGE"
+
+  # After the image is in ECR, record the new tag in the CONFIG repo so Argo CD deploys it.
+  # This is the "push the tag to git" half of GitOps — no in-cluster controller involved.
+  bump-config:
+    needs: build-push # only run if the image was built + pushed successfully
+    runs-on: ubuntu-latest
+    steps:
+      # Check out a DIFFERENT repo (the config repo). GITHUB_TOKEN can't reach another repo, so we
+      # authenticate with the deploy key's PRIVATE half, stored as the app-repo secret
+      # CONFIG_REPO_DEPLOY_KEY. Its PUBLIC half is a write-enabled Deploy Key on ssp-exchange-helm.
+      # `ssh-key` also stays configured for the git push below (persist-credentials defaults to true).
+      - name: Checkout config repo
+        uses: actions/checkout@v4
+        with:
+          repository: AlexanderMinko/ssp-exchange-helm
+          ssh-key: ${{ secrets.CONFIG_REPO_DEPLOY_KEY }}
+
+      # Set exchange.image.tag to the tag we just pushed, then commit. Argo CD (watching this repo)
+      # detects the commit and syncs. `yq` is preinstalled on ubuntu-latest runners.
+      - name: Bump exchange image tag and commit
+        env:
+          VERSION: 0.0.${{ github.run_number }} # same value the build job used (per-run counter)
+        run: |
+          yq -i ".exchange.image.tag = \"${VERSION}\"" charts/exchange/values.yaml
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add charts/exchange/values.yaml
+          git commit -m "deploy: exchange ${VERSION}" || { echo "nothing to commit"; exit 0; }
+          git push

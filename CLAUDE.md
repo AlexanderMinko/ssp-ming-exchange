@@ -13,11 +13,11 @@ Briefs you (the terminal AI) on who I am, what I'm building, and how to work wit
 - Plus two convenience components for end-to-end testing:
   - a **supply-partner SSP** (traffic source), and
   - a **demand-partner DSP** (bidder).
-- **One Kubernetes namespace per component** (e.g. `ssp`, `exchange`, `dsp`).
+- **Namespace: everything deploys into `production` for now** (pre-created by Terraform `platform/`, `var.app_namespaces`). Namespace-per-component (`ssp`/`exchange`/`dsp`) is a possible later split — don't assume it until decided.
 - **Per-component specifics (endpoints, payloads, exact workflow) I describe in the relevant channel.** Don't assume beyond what I've stated; ask if a detail is load-bearing and unspecified.
 
 ## Deployment target (the infra I already built)
-- EKS cluster **`eks-dev`**, region **`eu-central-1`** (separate Terraform repo at `…/AWS_EKS/terraform`).
+- EKS cluster **`eks-dev`**, region **`eu-central-1`** (separate Terraform repo at `…/AWS_EKS/ssp-ming-exchange-terraform`; GitOps config repo at `…/AWS_EKS/ssp-ming-exchange-helm`).
 - Images → ECR: `140023370575.dkr.ecr.eu-central-1.amazonaws.com/eks-dev/app` (eu-central-1).
 - Edge via the **Kubernetes Gateway API** (AWS LB Controller → ALB), an `HTTPRoute` per service.
 - That cluster will also run LGTM observability and an Istio ambient mesh later — so build the services to be **trace/mesh-friendly** (emit OTLP where it's cheap to).
@@ -32,9 +32,9 @@ Briefs you (the terminal AI) on who I am, what I'm building, and how to work wit
 ## Conventions / stack (confirm per component; some TBD)
 - Java + Spring Boot; reactive stack (WebFlux/Netty) likely, given my background — confirm per service.
 - OpenRTB version: TBD (I'll specify).
-- Containerized (Docker) → ECR → EKS via Gateway API `HTTPRoute`, namespace-per-component.
+- Containerized (Docker) → ECR → EKS via Gateway API `HTTPRoute` (attached to the shared `edge/shared` Gateway), all in namespace `production`.
 - **Synthetic data only.** All bid requests/responses are simulated — no real customer PII, no production revenue data. (Matches org data-handling rules.)
 
 ## Sequencing
-- Start with the Exchange's single endpoint (OpenRTB in → DSP response out), then the dummy DSP, then the supply SSP; wire them end-to-end across namespaces.
+- Start with the Exchange's single endpoint (OpenRTB in → DSP response out), then the dummy DSP, then the supply SSP; wire them end-to-end (in-cluster Service DNS within `production`).
 - Deploy early and often to the real cluster — the point is the whole system (app + platform) running together.
