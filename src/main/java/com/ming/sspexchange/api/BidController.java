@@ -9,7 +9,8 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.ming.sspexchange.model.openrtb.BidRequest;
 import com.ming.sspexchange.model.openrtb.BidResponse;
-import com.ming.sspexchange.service.auction.AuctionOrchestrator;
+import com.ming.sspexchange.service.auction.RtbOrchestrator;
+import com.ming.sspexchange.service.auction.RtbOutcome;
 
 import lombok.RequiredArgsConstructor;
 
@@ -17,17 +18,19 @@ import lombok.RequiredArgsConstructor;
 @RequiredArgsConstructor
 public class BidController {
 
-    private final AuctionOrchestrator orchestrator;
+    private final RtbOrchestrator orchestrator;
 
     @PostMapping(value = "/rtb/bid", consumes = MediaType.APPLICATION_JSON_VALUE,
             produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<BidResponse> bid(
-            @RequestParam(value = "account", required = false) String accountKey,
+            @RequestParam(value = "account", required = false) String sourceId,
             @RequestBody BidRequest request) {
-        // account is optional at the binding layer so a missing/blank value resolves to an unknown
-        // account (403) via SupplyResolver, rather than Spring's default 400 for a missing param.
-        return orchestrator.run(accountKey, request)
-                .map(ResponseEntity::ok)
-                .orElseGet(() -> ResponseEntity.noContent().build());
+        // account carries the 3-char sourceId. It is optional at the binding layer so a missing/blank
+        // value resolves to an unknown source (403) via SupplyResolver, not Spring's default 400.
+        return switch (orchestrator.run(sourceId, request)) {
+            case RtbOutcome.Fill(var response) -> ResponseEntity.ok(response);
+            case RtbOutcome.NoBid _ -> ResponseEntity.noContent().build();
+            case RtbOutcome.Rejected(var reason) -> ResponseEntity.status(reason.getHttpStatus()).build();
+        };
     }
 }

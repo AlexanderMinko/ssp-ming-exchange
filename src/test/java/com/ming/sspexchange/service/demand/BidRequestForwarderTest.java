@@ -7,7 +7,7 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.mapstruct.factory.Mappers;
 
-import com.ming.sspexchange.model.entity.BidderEntity;
+import com.ming.sspexchange.model.entity.Bidder;
 import com.ming.sspexchange.model.openrtb.App;
 import com.ming.sspexchange.model.openrtb.BidRequest;
 import com.ming.sspexchange.model.openrtb.Imp;
@@ -23,7 +23,7 @@ class BidRequestForwarderTest {
         var imp = new Imp(); imp.setId("imp-1");
         var app = new App(); app.setBundle("com.demo.app");
         var in = new BidRequest(); in.setId("req-1"); in.setTmax(350); in.setImp(List.of(imp)); in.setApp(app);
-        var bidder = BidderEntity.builder().id("b").name("b").endpoint("http://x").build();
+        var bidder = Bidder.builder().id("b").name("b").endpoint("http://x").build();
 
         var out = forwarder.outbound(in, bidder, 350);
 
@@ -39,7 +39,7 @@ class BidRequestForwarderTest {
     @Test
     void bidderOverrideCapsTimeout() {
         var in = new BidRequest(); in.setId("req-1"); in.setImp(List.of());
-        var bidder = BidderEntity.builder().id("b").name("b").tmaxMs(150).build();
+        var bidder = Bidder.builder().id("b").name("b").tmaxMs(150).build();
 
         assertThat(forwarder.outbound(in, bidder, 350).timeoutMs()).isEqualTo(150);
     }

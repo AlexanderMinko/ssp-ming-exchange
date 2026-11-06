@@ -7,7 +7,7 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.mapstruct.factory.Mappers;
 
-import com.ming.sspexchange.model.entity.BidderEntity;
+import com.ming.sspexchange.model.entity.Bidder;
 import com.ming.sspexchange.model.openrtb.Bid;
 import com.ming.sspexchange.model.openrtb.BidRequest;
 import com.ming.sspexchange.model.openrtb.Imp;
@@ -24,7 +24,7 @@ class ResponseBuilderTest {
         bid.setId("bid-9"); bid.setImpid("imp-1"); bid.setPrice(2.5);
         bid.setAdm("<div>${AUCTION_ID} @ ${AUCTION_PRICE}</div>");
         bid.setNurl("http://dsp/win?p=${AUCTION_PRICE}");
-        var bidder = BidderEntity.builder().id("alpha").name("alpha").seat("seat-alpha").build();
+        var bidder = Bidder.builder().id("alpha").name("alpha").seat("seat-alpha").build();
 
         var imp = new Imp(); imp.setId("imp-1");
         var request = new BidRequest(); request.setId("req-1"); request.setImp(List.of(imp));

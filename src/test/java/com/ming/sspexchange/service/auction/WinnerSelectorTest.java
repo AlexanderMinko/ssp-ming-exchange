@@ -6,7 +6,7 @@ import java.util.List;
 
 import org.junit.jupiter.api.Test;
 
-import com.ming.sspexchange.model.entity.BidderEntity;
+import com.ming.sspexchange.model.entity.Bidder;
 import com.ming.sspexchange.model.openrtb.Bid;
 import com.ming.sspexchange.model.openrtb.BidRequest;
 import com.ming.sspexchange.model.openrtb.BidResponse;
@@ -23,7 +23,7 @@ class WinnerSelectorTest {
         var bid = new Bid(); bid.setId("bid-" + bidderName); bid.setImpid(impid); bid.setPrice(price); bid.setAdm(adm);
         var sb = new SeatBid(); sb.setSeat("seat-" + bidderName); sb.setBid(List.of(bid));
         var resp = new BidResponse(); resp.setId("req-1"); resp.setSeatbid(List.of(sb));
-        var bidder = BidderEntity.builder().id(bidderName).name(bidderName).seat("seat-" + bidderName).build();
+        var bidder = Bidder.builder().id(bidderName).name(bidderName).seat("seat-" + bidderName).build();
         return new BidderCallResult(bidder, BidderOutcome.BID, resp, 50);
     }
 
@@ -72,7 +72,7 @@ class WinnerSelectorTest {
 
     @Test
     void nonBidOutcomesAreIgnored() {
-        var bidder = BidderEntity.builder().id("x").name("x").build();
+        var bidder = Bidder.builder().id("x").name("x").build();
         var results = List.of(new BidderCallResult(bidder, BidderOutcome.TIMEOUT, null, 300));
         assertThat(selector.select(requestWithFloor(null), results)).isEmpty();
     }

@@ -1,28 +1,29 @@
 package com.ming.sspexchange.seed;
 
-import static com.ming.sspexchange.model.entity.AdFormat.BANNER;
-import static com.ming.sspexchange.model.entity.AdFormat.VIDEO;
+import static com.ming.sspexchange.model.entity.SupplyPartnerType.PUBLISHER;
+import static com.ming.sspexchange.model.entity.SupplyPartnerType.SOURCE;
 import static com.ming.sspexchange.model.entity.PartnerStatus.ACTIVE;
 import static com.ming.sspexchange.model.entity.PartnerStatus.PAUSED;
 
 import java.util.List;
-import java.util.Set;
 import java.util.function.Function;
 
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.index.Index;
+import org.springframework.data.mongodb.core.index.PartialIndexFilter;
+import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.repository.MongoRepository;
 import org.springframework.stereotype.Component;
 
 import com.ming.sspexchange.cache.PartnerConfigCache;
-import com.ming.sspexchange.model.entity.AccountEntity;
-import com.ming.sspexchange.model.entity.BidderEntity;
+import com.ming.sspexchange.model.entity.Bidder;
 import com.ming.sspexchange.model.entity.MockConfig;
-import com.ming.sspexchange.model.entity.PublisherEntity;
-import com.ming.sspexchange.model.entity.Targeting;
-import com.ming.sspexchange.repository.AccountRepository;
+import com.ming.sspexchange.model.entity.SupplyPartner;
 import com.ming.sspexchange.repository.BidderRepository;
-import com.ming.sspexchange.repository.PublisherRepository;
+import com.ming.sspexchange.repository.SupplyPartnerRepository;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -32,22 +33,26 @@ import lombok.extern.slf4j.Slf4j;
  * seed Job. Inserts each document only if its _id is absent, so it never clobbers later edits and
  * is safe under multiple pods (a concurrent double-insert just re-saves identical data). Refreshes
  * the cache afterward so a freshly deployed pod serves fills immediately.
+ *
+ * <p>Before seeding it ensures a unique index on {@code publisherId}. The index is partial (PUBLISHER
+ * documents only), because sources have no publisherId. Creating an existing index is a no-op. If the
+ * collection already holds a duplicate publisherId, index creation fails and the app does not start.
  */
 @Slf4j
 @Component
 @RequiredArgsConstructor
 public class ConfigSeeder implements ApplicationRunner {
 
-    private final AccountRepository accounts;
-    private final PublisherRepository publishers;
+    private final SupplyPartnerRepository suppliers;
     private final BidderRepository bidders;
     private final PartnerConfigCache cache;
+    private final MongoTemplate mongo;
 
     @Override
     public void run(ApplicationArguments args) {
-        int inserted = insertMissing(accounts, seedAccounts(), AccountEntity::getId)
-                + insertMissing(publishers, seedPublishers(), PublisherEntity::getId)
-                + insertMissing(bidders, seedBidders(), BidderEntity::getId);
+        ensurePublisherIdUnique();
+        int inserted = insertMissing(suppliers, seedSuppliers(), SupplyPartner::getId)
+                + insertMissing(bidders, seedBidders(), Bidder::getId);
         if (inserted > 0) {
             log.info("ConfigSeeder inserted {} missing config document(s); refreshing cache", inserted);
             cache.refresh();
@@ -56,50 +61,50 @@ public class ConfigSeeder implements ApplicationRunner {
         }
     }
 
+    private void ensurePublisherIdUnique() {
+        mongo.indexOps(SupplyPartner.class).createIndex(new Index()
+                .on("publisherId", Sort.Direction.ASC)
+                .named("publisherId_unique")
+                .unique()
+                .partial(PartialIndexFilter.of(Criteria.where("entityType").is(PUBLISHER.name()))));
+    }
+
     private static <T> int insertMissing(MongoRepository<T, String> repo, List<T> items, Function<T, String> id) {
-        int n = 0;
-        for (T item : items) {
-            if (!repo.existsById(id.apply(item))) {
-                repo.save(item);
-                n++;
-            }
-        }
-        return n;
+        var missing = items.stream()
+                .filter(item -> !repo.existsById(id.apply(item)))
+                .toList();
+        repo.saveAll(missing);
+        return missing.size();
     }
 
-    private static List<AccountEntity> seedAccounts() {
+    private static List<SupplyPartner> seedSuppliers() {
         return List.of(
-                AccountEntity.builder().id("acc-amz").accountKey("amz-key-001")
-                        .name("Amazon APS").type("API").status(ACTIVE).build(),
-                AccountEntity.builder().id("acc-liftoff").accountKey("liftoff-key-001")
-                        .name("Liftoff").type("SDK").status(ACTIVE).build());
+                SupplyPartner.builder().id("src-doc-1").entityType(SOURCE).sourceId("amz")
+                        .name("Amazon APS source").status(ACTIVE).build(),
+                SupplyPartner.builder().id("src-doc-2").entityType(SOURCE).sourceId("lft")
+                        .name("Liftoff source").status(ACTIVE).build(),
+                SupplyPartner.builder().id("src-doc-3").entityType(SOURCE).sourceId("old")
+                        .name("Paused source").status(PAUSED).build(),
+                SupplyPartner.builder().id("pub-doc-1").entityType(PUBLISHER)
+                        .publisherId("pub-100").name("News App Pub").status(ACTIVE).build(),
+                SupplyPartner.builder().id("pub-doc-2").entityType(PUBLISHER)
+                        .publisherId("pub-200").name("Paused Pub").status(PAUSED).build(),
+                SupplyPartner.builder().id("pub-doc-3").entityType(PUBLISHER)
+                        .publisherId("pub-300").name("Game Pub").status(ACTIVE).build());
     }
 
-    private static List<PublisherEntity> seedPublishers() {
+    private static List<Bidder> seedBidders() {
         return List.of(
-                PublisherEntity.builder().id("pub-doc-1").accountId("acc-amz").publisherId("pub-100")
-                        .name("News App Pub").status(ACTIVE).build(),
-                PublisherEntity.builder().id("pub-doc-2").accountId("acc-amz").publisherId("pub-200")
-                        .name("Paused Pub").status(PAUSED).build(),
-                PublisherEntity.builder().id("pub-doc-3").accountId("acc-liftoff").publisherId("pub-300")
-                        .name("Game Pub").status(ACTIVE).build());
-    }
-
-    private static List<BidderEntity> seedBidders() {
-        return List.of(
-                BidderEntity.builder().id("bidder-alpha").name("alpha").seat("seat-alpha")
+                Bidder.builder().id("bidder-alpha").name("alpha").seat("seat-alpha")
                         .endpoint("mock:alpha").status(ACTIVE)
-                        .targeting(Targeting.builder().formats(Set.of(BANNER, VIDEO)).countries(Set.of()).build())
                         .mock(MockConfig.builder().price(2.5).latencyMs(20).bidRate(1.0).build())
                         .build(),
-                BidderEntity.builder().id("bidder-beta").name("beta").seat("seat-beta")
+                Bidder.builder().id("bidder-beta").name("beta").seat("seat-beta")
                         .endpoint("mock:beta").status(ACTIVE).tmaxMs(200)
-                        .targeting(Targeting.builder().formats(Set.of(BANNER)).countries(Set.of("USA")).build())
                         .mock(MockConfig.builder().price(1.2).latencyMs(50).bidRate(0.8).build())
                         .build(),
-                BidderEntity.builder().id("bidder-gamma").name("gamma").seat("seat-gamma")
+                Bidder.builder().id("bidder-gamma").name("gamma").seat("seat-gamma")
                         .endpoint("http://dsp.dsp.svc.cluster.local:8080/rtb/bid").status(PAUSED)
-                        .targeting(Targeting.builder().formats(Set.of(BANNER, VIDEO)).countries(Set.of()).build())
                         .build());
     }
 }

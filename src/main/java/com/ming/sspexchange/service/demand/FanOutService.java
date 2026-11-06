@@ -1,12 +1,9 @@
 package com.ming.sspexchange.service.demand;
 
-import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.ExecutionException;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 
 import org.springframework.stereotype.Component;
 
@@ -20,31 +17,21 @@ public class FanOutService {
     private final MockBidderClient mockBidderClient;
     private final ExecutorService bidderExecutor;
 
+    /**
+     * Calls every bidder concurrently. Each call's deadline starts at submit time. A late bidder
+     * becomes a TIMEOUT value via completeOnTimeout — nothing is thrown on the hot path.
+     * Trade-off: completeOnTimeout does not interrupt the task. A timed-out HTTP call keeps its
+     * virtual thread until the client read timeout ends it; a mock keeps sleeping (cheap).
+     */
     public List<BidderCallResult> fanOut(List<OutboundRequest> outs) {
-        long startNanos = System.nanoTime();
-        // Submit everything first so all bidder calls run concurrently, then collect against each
-        // call's own deadline measured from the shared submit time.
-        var inFlight = outs.stream()
-                .map(out -> new InFlight(out, bidderExecutor.submit(() -> callBidder(out))))
+        var calls = outs.stream()
+                .map(out -> CompletableFuture.supplyAsync(() -> callBidder(out), bidderExecutor)
+                        .exceptionally(e -> failed(out, BidderOutcome.ERROR))   // safety net; clients don't throw
+                        .completeOnTimeout(failed(out, BidderOutcome.TIMEOUT), out.timeoutMs(), TimeUnit.MILLISECONDS))
                 .toList();
-
-        var results = new ArrayList<BidderCallResult>(inFlight.size());
-        for (InFlight f : inFlight) {
-            long remainingMs = Math.max(0, f.out().timeoutMs() - Latency.msSince(startNanos));
-            try {
-                results.add(f.future().get(remainingMs, TimeUnit.MILLISECONDS));
-            } catch (TimeoutException e) {
-                f.future().cancel(true);   // interrupt the blocking HTTP read / mock sleep
-                results.add(failed(f.out(), BidderOutcome.TIMEOUT));
-            } catch (ExecutionException e) {
-                results.add(failed(f.out(), BidderOutcome.ERROR));
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                f.future().cancel(true);
-                results.add(failed(f.out(), BidderOutcome.ERROR));
-            }
-        }
-        return results;
+        return calls.stream()
+                .map(CompletableFuture::join)
+                .toList();
     }
 
     private BidderCallResult callBidder(OutboundRequest out) {
@@ -54,6 +41,4 @@ public class FanOutService {
     private static BidderCallResult failed(OutboundRequest out, BidderOutcome outcome) {
         return new BidderCallResult(out.bidder(), outcome, null, out.timeoutMs());
     }
-
-    private record InFlight(OutboundRequest out, Future<BidderCallResult> future) { }
 }

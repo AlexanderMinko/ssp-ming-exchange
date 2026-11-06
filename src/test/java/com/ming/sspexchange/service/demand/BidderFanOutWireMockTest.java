@@ -17,7 +17,7 @@ import com.dslplatform.json.runtime.Settings;
 import com.github.tomakehurst.wiremock.WireMockServer;
 import com.ming.sspexchange.config.BidderClientConfig;
 import com.ming.sspexchange.config.BidderClientProperties;
-import com.ming.sspexchange.model.entity.BidderEntity;
+import com.ming.sspexchange.model.entity.Bidder;
 import com.ming.sspexchange.model.entity.MockConfig;
 import com.ming.sspexchange.model.openrtb.BidRequest;
 import com.ming.sspexchange.model.openrtb.Imp;
@@ -47,7 +47,7 @@ class BidderFanOutWireMockTest {
     static void tearDown() { wm.stop(); }
 
     private static OutboundRequest out(String path, int timeoutMs) {
-        var bidder = BidderEntity.builder().id(path).name(path).seat("s")
+        var bidder = Bidder.builder().id(path).name(path).seat("s")
                 .endpoint(wm.baseUrl() + path).build();
         var imp = new Imp(); imp.setId("imp-1");
         var request = new BidRequest(); request.setId("req-1"); request.setImp(List.of(imp));
@@ -55,7 +55,7 @@ class BidderFanOutWireMockTest {
     }
 
     private static OutboundRequest mockOut(String name, MockConfig mock, int timeoutMs) {
-        var bidder = BidderEntity.builder().id(name).name(name).seat("seat-" + name)
+        var bidder = Bidder.builder().id(name).name(name).seat("seat-" + name)
                 .endpoint("mock:" + name).mock(mock).build();
         var imp = new Imp(); imp.setId("imp-1");
         var request = new BidRequest(); request.setId("req-1"); request.setImp(List.of(imp));

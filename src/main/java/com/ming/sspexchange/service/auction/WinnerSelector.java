@@ -1,14 +1,14 @@
 package com.ming.sspexchange.service.auction;
 
+import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
+import org.apache.commons.lang3.StringUtils;
 import org.springframework.stereotype.Component;
 
-import com.ming.sspexchange.model.openrtb.Bid;
 import com.ming.sspexchange.model.openrtb.BidRequest;
-import com.ming.sspexchange.model.openrtb.SeatBid;
 import com.ming.sspexchange.service.demand.BidderCallResult;
 import com.ming.sspexchange.service.demand.BidderOutcome;
 
@@ -20,21 +20,16 @@ public class WinnerSelector {
         var firstImp = request.getImp().get(0);
         double floor = Objects.nonNull(firstImp.getBidfloor()) ? firstImp.getBidfloor() : 0.0;
 
-        WinningBid best = null;
-        for (BidderCallResult result : results) {
-            if (result.outcome() != BidderOutcome.BID) continue;
-            for (SeatBid seatBid : result.response().getSeatbid()) {
-                if (Objects.isNull(seatBid.getBid())) continue;
-                for (Bid bid : seatBid.getBid()) {
-                    if (!firstImp.getId().equals(bid.getImpid())) continue;
-                    if (Objects.isNull(bid.getPrice()) || bid.getPrice() < floor) continue;
-                    if (Objects.isNull(bid.getAdm()) || bid.getAdm().isBlank()) continue;
-                    if (Objects.isNull(best) || bid.getPrice() > best.bid().getPrice()) {
-                        best = new WinningBid(result.bidder(), bid);
-                    }
-                }
-            }
-        }
-        return Optional.ofNullable(best);
+        // Stream.max keeps the first element on a tie, so the earliest bidder wins equal prices.
+        return results.stream()
+                .filter(result -> result.outcome() == BidderOutcome.BID)
+                .flatMap(result -> result.response().getSeatbid().stream()
+                        .filter(seatBid -> Objects.nonNull(seatBid.getBid()))
+                        .flatMap(seatBid -> seatBid.getBid().stream())
+                        .filter(bid -> firstImp.getId().equals(bid.getImpid()))
+                        .filter(bid -> Objects.nonNull(bid.getPrice()) && bid.getPrice() >= floor)
+                        .filter(bid -> StringUtils.isNotBlank(bid.getAdm()))
+                        .map(bid -> new WinningBid(result.bidder(), bid)))
+                .max(Comparator.comparingDouble(w -> w.bid().getPrice()));
     }
 }

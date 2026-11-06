@@ -1,25 +1,25 @@
 package com.ming.sspexchange.service.auction;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.argThat;
-import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.util.List;
+import java.util.Optional;
 
 import org.junit.jupiter.api.Test;
 import org.mapstruct.factory.Mappers;
 
 import com.ming.sspexchange.cache.PartnerConfigCache;
-import com.ming.sspexchange.model.entity.AccountEntity;
-import com.ming.sspexchange.model.entity.BidderEntity;
+import com.ming.sspexchange.model.entity.Bidder;
 import com.ming.sspexchange.model.entity.PartnerStatus;
-import com.ming.sspexchange.model.entity.PublisherEntity;
+import com.ming.sspexchange.model.entity.SupplyPartnerType;
+import com.ming.sspexchange.model.entity.SupplyPartner;
 import com.ming.sspexchange.model.openrtb.App;
 import com.ming.sspexchange.model.openrtb.Banner;
 import com.ming.sspexchange.model.openrtb.Bid;
@@ -31,24 +31,22 @@ import com.ming.sspexchange.model.openrtb.SeatBid;
 import com.ming.sspexchange.service.demand.BidRequestForwarder;
 import com.ming.sspexchange.service.demand.BidderCallResult;
 import com.ming.sspexchange.service.demand.BidderOutcome;
-import com.ming.sspexchange.service.demand.BidderTargetingFilter;
 import com.ming.sspexchange.service.demand.FanOutService;
 import com.ming.sspexchange.service.event.AuctionEventLogger;
 import com.ming.sspexchange.service.mapper.OrtbMapper;
 import com.ming.sspexchange.service.metrics.ExchangeMetrics;
-import com.ming.sspexchange.service.supply.InvalidBidRequestException;
+import com.ming.sspexchange.model.RtbContext;
+import com.ming.sspexchange.service.supply.RejectReason;
 import com.ming.sspexchange.service.supply.RequestValidator;
-import com.ming.sspexchange.service.supply.SupplyContext;
 import com.ming.sspexchange.service.supply.SupplyResolver;
 
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 
-class AuctionOrchestratorTest {
+class RtbOrchestratorTest {
 
     private final SupplyResolver supplyResolver = mock(SupplyResolver.class);
     private final RequestValidator validator = mock(RequestValidator.class);
     private final PartnerConfigCache cache = mock(PartnerConfigCache.class);
-    private final BidderTargetingFilter targetingFilter = mock(BidderTargetingFilter.class);
     private final BidRequestForwarder forwarder =
             new BidRequestForwarder(Mappers.getMapper(OrtbMapper.class));
     private final FanOutService fanOut = mock(FanOutService.class);
@@ -58,12 +56,12 @@ class AuctionOrchestratorTest {
     private final AuctionEventLogger eventLogger = mock(AuctionEventLogger.class);
     private final ExchangeMetrics metrics = new ExchangeMetrics(new SimpleMeterRegistry());
 
-    private final AuctionOrchestrator orchestrator = new AuctionOrchestrator(
-            supplyResolver, validator, cache, targetingFilter, forwarder, fanOut,
+    private final RtbOrchestrator orchestrator = new RtbOrchestrator(
+            supplyResolver, validator, cache, forwarder, fanOut,
             winnerSelector, responseBuilder, eventLogger, metrics);
 
-    private static final BidderEntity ALPHA = BidderEntity.builder()
-            .id("alpha").name("alpha").seat("seat-alpha").endpoint("http://a").build();
+    private static final Bidder ALPHA = Bidder.builder()
+            .id("alpha").name("alpha").seat("seat-alpha").endpoint("http://a").status(PartnerStatus.ACTIVE).build();
 
     private static BidRequest request() {
         var banner = new Banner();
@@ -74,11 +72,19 @@ class AuctionOrchestratorTest {
         return r;
     }
 
-    private static SupplyContext supply() {
-        return new SupplyContext(
-                AccountEntity.builder().id("acc-1").accountKey("key-1").status(PartnerStatus.ACTIVE).build(),
-                PublisherEntity.builder().id("p-1").accountId("acc-1").publisherId("pub-100")
-                        .status(PartnerStatus.ACTIVE).build());
+    private static final SupplyPartner SOURCE = SupplyPartner.builder().id("s-1").entityType(SupplyPartnerType.SOURCE)
+            .sourceId("abc").status(PartnerStatus.ACTIVE).build();
+    private static final SupplyPartner PUBLISHER = SupplyPartner.builder().id("p-1").entityType(SupplyPartnerType.PUBLISHER)
+            .publisherId("pub-100").status(PartnerStatus.ACTIVE).build();
+
+    // Stub supply resolution the way the real resolver does it: fill RtbData, return no reject.
+    private void supplyResolves() {
+        when(supplyResolver.resolve(any())).thenAnswer(inv -> {
+            RtbContext ctx = inv.getArgument(0);
+            ctx.data().setSource(SOURCE);
+            ctx.data().setPublisher(PUBLISHER);
+            return Optional.empty();
+        });
     }
 
     private static BidderCallResult bidFromAlpha(double price) {
@@ -92,28 +98,29 @@ class AuctionOrchestratorTest {
     @Test
     void fillPathReturnsResponseWithSubstitutedNurlAndLogsEvent() {
         var request = request();
-        when(supplyResolver.resolve("key-1", request)).thenReturn(supply());
+        supplyResolves();
         when(cache.bidders()).thenReturn(List.of(ALPHA));
-        when(targetingFilter.eligible(request, List.of(ALPHA))).thenReturn(List.of(ALPHA));
         when(fanOut.fanOut(anyList())).thenReturn(List.of(bidFromAlpha(2.5)));
 
-        var response = orchestrator.run("key-1", request);
+        var outcome = orchestrator.run("abc", request);
 
-        assertThat(response).isPresent();
-        assertThat(response.get().getSeatbid().get(0).getSeat()).isEqualTo("seat-alpha");
-        assertThat(response.get().getSeatbid().get(0).getBid().get(0).getNurl())
+        assertThat(outcome).isInstanceOf(RtbOutcome.Fill.class);
+        var response = ((RtbOutcome.Fill) outcome).response();
+        assertThat(response.getSeatbid().get(0).getSeat()).isEqualTo("seat-alpha");
+        assertThat(response.getSeatbid().get(0).getBid().get(0).getNurl())
                 .isEqualTo("http://a/win?p=2.5");
-        verify(eventLogger).log(argThat(e -> e.winner().equals("alpha") && e.responseStatus() == 200));
+        verify(eventLogger).log(argThat(e -> e.winner().equals("alpha") && e.responseStatus() == 200
+                && e.publisherId().equals("pub-100") && e.supplierType().equals("PUBLISHER")));
     }
 
     @Test
-    void noEligibleBiddersShortCircuitsWithEvent() {
+    void noActiveBiddersShortCircuitsWithEvent() {
         var request = request();
-        when(supplyResolver.resolve("key-1", request)).thenReturn(supply());
-        when(cache.bidders()).thenReturn(List.of(ALPHA));
-        when(targetingFilter.eligible(request, List.of(ALPHA))).thenReturn(List.of());
+        supplyResolves();
+        when(cache.bidders()).thenReturn(List.of(Bidder.builder()
+                .id("gamma").name("gamma").seat("seat-gamma").endpoint("http://g").status(PartnerStatus.PAUSED).build()));
 
-        assertThat(orchestrator.run("key-1", request)).isEmpty();
+        assertThat(orchestrator.run("abc", request)).isEqualTo(RtbOutcome.NO_BID);
         verify(fanOut, never()).fanOut(anyList());
         verify(eventLogger).log(argThat(e -> e.responseStatus() == 204));
     }
@@ -121,23 +128,33 @@ class AuctionOrchestratorTest {
     @Test
     void noValidBidsIsNoBid() {
         var request = request();
-        when(supplyResolver.resolve("key-1", request)).thenReturn(supply());
+        supplyResolves();
         when(cache.bidders()).thenReturn(List.of(ALPHA));
-        when(targetingFilter.eligible(request, List.of(ALPHA))).thenReturn(List.of(ALPHA));
         when(fanOut.fanOut(anyList())).thenReturn(
                 List.of(new BidderCallResult(ALPHA, BidderOutcome.TIMEOUT, null, 300)));
 
-        assertThat(orchestrator.run("key-1", request)).isEmpty();
+        assertThat(orchestrator.run("abc", request)).isEqualTo(RtbOutcome.NO_BID);
         verify(eventLogger).log(argThat(e -> e.responseStatus() == 204));
     }
 
     @Test
-    void validationFailurePropagates() {
+    void validationFailureIsRejectedWithoutAuction() {
         var request = request();
-        when(supplyResolver.resolve("key-1", request)).thenReturn(supply());
-        doThrow(new InvalidBidRequestException("bad")).when(validator).validate(request);
+        supplyResolves();
+        when(validator.validate(request)).thenReturn(Optional.of(RejectReason.MISSING_IMP));
 
-        assertThatThrownBy(() -> orchestrator.run("key-1", request))
-                .isInstanceOf(InvalidBidRequestException.class);
+        assertThat(orchestrator.run("abc", request)).isEqualTo(new RtbOutcome.Rejected(RejectReason.MISSING_IMP));
+        verify(fanOut, never()).fanOut(anyList());
+        verify(eventLogger, never()).log(any());
+    }
+
+    @Test
+    void supplyRejectSkipsValidationAndAuction() {
+        var request = request();
+        when(supplyResolver.resolve(any())).thenReturn(Optional.of(RejectReason.UNKNOWN_SOURCE));
+
+        assertThat(orchestrator.run("zzz", request)).isEqualTo(new RtbOutcome.Rejected(RejectReason.UNKNOWN_SOURCE));
+        verify(validator, never()).validate(any());
+        verify(fanOut, never()).fanOut(anyList());
     }
 }

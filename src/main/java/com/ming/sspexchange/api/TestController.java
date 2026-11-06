@@ -2,7 +2,7 @@ package com.ming.sspexchange.api;
 
 import com.ming.sspexchange.model.openrtb.BidRequest;
 import com.ming.sspexchange.model.openrtb.BidResponse;
-import com.ming.sspexchange.service.auction.AuctionOrchestrator;
+import com.ming.sspexchange.service.auction.RtbOrchestrator;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -17,7 +17,7 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class TestController {
 
-    private final AuctionOrchestrator orchestrator;
+    private final RtbOrchestrator orchestrator;
 
     @PostMapping(value = "/test", consumes = MediaType.APPLICATION_JSON_VALUE,
             produces = MediaType.APPLICATION_JSON_VALUE)

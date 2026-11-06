@@ -7,8 +7,9 @@ import com.dslplatform.json.CompiledJson;
 @CompiledJson
 public record AuctionEvent(
         String auctionId,
-        String accountKey,
-        String publisherId,
+        String sourceId,
+        String publisherId,       // null when the source config applied
+        String supplierType,     // PUBLISHER | SOURCE — whose config applied
         List<String> formats,
         List<String> eligibleBidders,
         List<BidderOutcomeEvent> bidders,

@@ -1,7 +1,6 @@
 package com.ming.sspexchange.service.supply;
 
-import static org.assertj.core.api.Assertions.assertThatCode;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.assertThat;
 
 import java.util.List;
 
@@ -28,37 +27,37 @@ class RequestValidatorTest {
     }
 
     @Test void acceptsValidRequest() {
-        assertThatCode(() -> validator.validate(valid())).doesNotThrowAnyException();
+        assertThat(validator.validate(valid())).isEmpty();
     }
 
     @Test void rejectsMissingId() {
         var r = valid(); r.setId(" ");
-        assertThatThrownBy(() -> validator.validate(r)).isInstanceOf(InvalidBidRequestException.class);
+        assertThat(validator.validate(r)).contains(RejectReason.MISSING_REQUEST_ID);
     }
 
     @Test void rejectsEmptyImps() {
         var r = valid(); r.setImp(List.of());
-        assertThatThrownBy(() -> validator.validate(r)).isInstanceOf(InvalidBidRequestException.class);
+        assertThat(validator.validate(r)).contains(RejectReason.MISSING_IMP);
     }
 
     @Test void rejectsImpWithoutBannerOrVideo() {
         var imp = new Imp(); imp.setId("imp-1");
         var r = valid(); r.setImp(List.of(imp));
-        assertThatThrownBy(() -> validator.validate(r)).isInstanceOf(InvalidBidRequestException.class);
+        assertThat(validator.validate(r)).contains(RejectReason.IMP_NO_FORMAT);
     }
 
     @Test void rejectsNegativeFloor() {
         var r = valid(); r.getImp().get(0).setBidfloor(-1.0);
-        assertThatThrownBy(() -> validator.validate(r)).isInstanceOf(InvalidBidRequestException.class);
+        assertThat(validator.validate(r)).contains(RejectReason.NEGATIVE_BIDFLOOR);
     }
 
     @Test void rejectsBothAppAndSite() {
         var r = valid(); r.setSite(new Site());
-        assertThatThrownBy(() -> validator.validate(r)).isInstanceOf(InvalidBidRequestException.class);
+        assertThat(validator.validate(r)).contains(RejectReason.APP_XOR_SITE);
     }
 
     @Test void rejectsNeitherAppNorSite() {
         var r = valid(); r.setApp(null);
-        assertThatThrownBy(() -> validator.validate(r)).isInstanceOf(InvalidBidRequestException.class);
+        assertThat(validator.validate(r)).contains(RejectReason.APP_XOR_SITE);
     }
 }

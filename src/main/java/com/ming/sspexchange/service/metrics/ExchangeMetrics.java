@@ -5,6 +5,7 @@ import java.time.Duration;
 import org.springframework.stereotype.Component;
 
 import com.ming.sspexchange.service.demand.BidderOutcome;
+import com.ming.sspexchange.service.supply.RejectReason;
 
 import io.micrometer.core.instrument.MeterRegistry;
 
@@ -36,7 +37,13 @@ public class ExchangeMetrics {
 
     // Requests rejected before an auction runs (400 invalid / 403 supply-auth). Kept out of the
     // AUCTION_EVENTS stream (those are real auctions) but counted so rejects stay observable.
-    public void reject(int status) {
-        registry.counter("exchange.reject", "status", String.valueOf(status)).increment();
+    public void reject(RejectReason reason) {
+        registry.counter("exchange.reject",
+                "status", String.valueOf(reason.getHttpStatus()), "reason", reason.name()).increment();
+    }
+
+    // Malformed JSON never reaches the orchestrator — it fails in the message converter.
+    public void rejectMalformed() {
+        registry.counter("exchange.reject", "status", "400", "reason", "MALFORMED_JSON").increment();
     }
 }

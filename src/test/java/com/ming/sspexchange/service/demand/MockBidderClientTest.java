@@ -6,7 +6,7 @@ import java.util.List;
 
 import org.junit.jupiter.api.Test;
 
-import com.ming.sspexchange.model.entity.BidderEntity;
+import com.ming.sspexchange.model.entity.Bidder;
 import com.ming.sspexchange.model.entity.MockConfig;
 import com.ming.sspexchange.model.entity.PartnerStatus;
 import com.ming.sspexchange.model.openrtb.BidRequest;
@@ -17,7 +17,7 @@ class MockBidderClientTest {
     private final MockBidderClient client = new MockBidderClient();
 
     private static OutboundRequest out(MockConfig mock) {
-        var bidder = BidderEntity.builder().id("m").name("mock-alpha").seat("seat-mock")
+        var bidder = Bidder.builder().id("m").name("mock-alpha").seat("seat-mock")
                 .endpoint("mock:alpha").status(PartnerStatus.ACTIVE).mock(mock).build();
         var imp = new Imp(); imp.setId("imp-1");
         var request = new BidRequest(); request.setId("req-1"); request.setImp(List.of(imp));

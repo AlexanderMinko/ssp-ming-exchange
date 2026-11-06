@@ -22,7 +22,7 @@ class AuctionEventLoggerTest {
 
         var eventLogger = new AuctionEventLogger();
 
-        eventLogger.log(new AuctionEvent("req-1", "amz-key-001", "pub-100",
+        eventLogger.log(new AuctionEvent("req-1", "amz", "pub-100", "PUBLISHER",
                 List.of("BANNER"), List.of("alpha", "beta"),
                 List.of(new BidderOutcomeEvent("alpha", "BID", 0, 2.5),
                         new BidderOutcomeEvent("beta", "TIMEOUT", 300, null)),
@@ -31,6 +31,8 @@ class AuctionEventLoggerTest {
         assertThat(appender.list).hasSize(1);
         var line = appender.list.get(0).getFormattedMessage();
         assertThat(line).contains("\"auctionId\":\"req-1\"")
+                .contains("\"sourceId\":\"amz\"")
+                .contains("\"supplierType\":\"PUBLISHER\"")
                 .contains("\"winner\":\"alpha\"")
                 .contains("\"outcome\":\"TIMEOUT\"")
                 .contains("\"responseStatus\":200")

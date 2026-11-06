@@ -20,50 +20,47 @@ Minimal SSP/Exchange simulator: one HTTP endpoint that accepts an OpenRTB 2.6 bi
 
 ## 3. HTTP contract
 
-`POST /rtb/bid?account={accountKey}` — OpenRTB 2.6 JSON body.
+`POST /rtb/bid?account={sourceId}` — OpenRTB 2.6 JSON body. `sourceId` is always 3 chars.
 
 | Result | Response |
 |---|---|
 | Fill | `200` + `BidResponse` (single seatbid, single bid) |
 | No-bid: no eligible bidders, no bids returned, all bids under floor, all bidders timed out | `204`, empty body |
-| Malformed JSON / failed ORTB validation | `400` |
-| Unknown `accountKey`, or publisher id from body not registered under that account, or account/publisher `status != ACTIVE` | `403` |
+| Malformed JSON / failed ORTB validation / `sourceId` not 3 chars | `400` |
+| Missing or unknown `sourceId`, or source/publisher `status != ACTIVE` | `403` |
 
-Supply identification: `accountKey` from the query param → Account. Publisher external id read from the body (`app.publisher.id` if `app` present, else `site.publisher.id`) → Publisher looked up under that Account.
+Supply identification (updated 01/11/2026): `sourceId` from the query param → SOURCE supplier. Publisher external id read from the body (`app.publisher.id` if `app` present, else `site.publisher.id`) → PUBLISHER supplier looked up by that id alone (global). If the publisher is registered, its config applies (a paused one → 403). If it is unregistered or `publisher.id` is absent, the source's config applies.
 
-Validation rules (400 on failure): `id` present; ≥ 1 `imp`; every imp has `banner` or `video`; `imp.bidfloor` if present is a valid non-negative number; `app` xor `site` present with a `publisher.id`.
+Validation rules (400 on failure): `id` present; ≥ 1 `imp`; every imp has `banner` or `video`; `imp.bidfloor` if present is a valid non-negative number; `app` xor `site` present (`publisher.id` is optional — absent falls back to the source).
 
 ## 4. Mongo data model
 
-Database `ssp-exchange`, three collections. Config-only — no auction data is written to Mongo.
+Database `ssp-exchange`, two collections (`accounts` dropped 02/11/2026; `accountId` dropped 06/11/2026 — publishers are global, keyed by `publisherId`). Config-only — no auction data is written to Mongo.
 
-### `accounts`
+### `supply_partners`
+One collection for publishers and sources (replaces `publishers`, 01/11/2026). A publisher belongs to a source only through traffic (the source sends its `publisher.id`); there is no DB link. The source's config applies when the request's publisher is not registered.
 ```
-{ _id, accountKey (unique, used in URL param), name, type: "SDK"|"API", status: "ACTIVE"|"PAUSED" }
+{ _id, entityType: "PUBLISHER"|"SOURCE",
+  publisherId (PUBLISHER only — external id matched against request body),
+  sourceId (SOURCE only — 3-char URL param), name, status }
 ```
-
-### `publishers`
-```
-{ _id, accountId (ref accounts._id), publisherId (external id matched against request body), name, status }
-```
-Uniqueness: `(accountId, publisherId)`.
+Uniqueness: `sourceId` for sources, `publisherId` for publishers (global). `publisherId` has a unique partial index (`publisherId_unique`, PUBLISHER documents only), which `ConfigSeeder` creates at startup.
 
 ### `bidders`
 ```
 { _id, name, seat, endpoint (absolute URL, or "mock:<name>" for built-in mock demand), status,
-  targeting: { formats: ["BANNER","VIDEO"], countries: [] },   // empty countries = all
   tmaxMs (optional per-bidder override),
   mock (required when endpoint is mock:*): { price, latencyMs (opt, default 0), bidRate (opt 0.0–1.0, default 1.0) } }
 ```
 
-**Mock demand (until the dummy DSP exists):** a bidder whose `endpoint` starts with `mock:` is served in-process by a `MockBidderClient` instead of HTTP — it sleeps `latencyMs` (virtual thread; still subject to the fan-out deadline, so latency > timeout genuinely produces TIMEOUT), bids with probability `bidRate`, and fabricates a single-bid `BidResponse` at the fixed `price` with macro placeholders in `adm`/`nurl`. Everything downstream (targeting, auction, floors, macros, event log, metrics) treats mock and HTTP bidders identically. Deploying the real DSP later = updating `endpoint` in Mongo; zero code changes.
+**Mock demand (until the dummy DSP exists):** a bidder whose `endpoint` starts with `mock:` is served in-process by a `MockBidderClient` instead of HTTP — it sleeps `latencyMs` (virtual thread; still subject to the fan-out deadline, so latency > timeout genuinely produces TIMEOUT), bids with probability `bidRate`, and fabricates a single-bid `BidResponse` at the fixed `price` with macro placeholders in `adm`/`nurl`. Everything downstream (auction, floors, macros, event log, metrics) treats mock and HTTP bidders identically. Deploying the real DSP later = updating `endpoint` in Mongo; zero code changes.
 
-Seeding: JSON fixtures in `src/main/resources/seed/` (also used by tests), loaded via `scripts/seed.sh` (mongosh). Fixtures: 2 accounts, 3 publishers, 3 bidders (distinct targeting so filtering is demonstrable).
+Seeding: JSON fixtures in `src/main/resources/seed/` (also used by tests), loaded via `scripts/seed.sh` (mongosh). Fixtures: 3 sources (1 paused), 3 publishers, 3 bidders.
 
 ## 5. Config cache
 
-- `PartnerConfigCache`: loads all three collections at startup (fail fast if Mongo is unreachable), `@Scheduled` full refresh every 30 s.
-- Structures: `Map<accountKey, Account>`, `Map<accountId, Map<publisherId, Publisher>>`, `List<Bidder>` — replaced atomically per refresh (volatile snapshot object holding all three; readers never see a partial refresh).
+- `PartnerConfigCache`: loads both collections at startup (fail fast if Mongo is unreachable), `@Scheduled` full refresh every 30 s.
+- Structures: `Map<sourceId, Source>`, `Map<publisherId, Publisher>`, `List<Bidder>` — replaced atomically per refresh (volatile snapshot object holding all three; readers never see a partial refresh).
 - Refresh failure: log + keep last-good snapshot.
 - Spring Data repositories are used by the cache loader only; nothing else touches Mongo at request time.
 
@@ -73,9 +70,14 @@ Mini-layered: one small class per stage, wired by the controller. No pipeline fr
 
 ```
 BidController (typed: @RequestBody BidRequest → ResponseEntity<BidResponse>; dsl-json converter does the codec work, parse failure → 400 via exception handler)
- → SupplyResolver       accountKey → Account, body → Publisher; 403 on failure
- → RequestValidator     rules from §3; 400 on failure
- → BidderTargetingFilter status ACTIVE + format match + country match (device.geo.country, ISO-3166-1 alpha-3; a request with no country matches all bidders — the country filter applies only when the request carries one)
+RtbContext (one per request) = adRequest + RtbData. RtbData collects everything the flow learns:
+  source, publisher (null → source config applies), formats, effectiveTmax, eligibleBidders,
+  bidderResults, winner. Stages read/write it instead of passing values between them.
+ → SupplyResolver       sourceId → Source; body → Publisher, else fall back to Source; writes RtbData, returns Optional<RejectReason>
+ → RequestValidator     rules from §3; returns Optional<RejectReason>
+   (RtbOrchestrator returns RtbOutcome = Fill | NoBid | Rejected; BidController maps it to a status.
+    No exceptions on the hot path — updated 06/11/2026. Only malformed JSON still throws, inside the converter.)
+ → (no targeting)      every bidder with status ACTIVE is eligible — BidderTargetingFilter removed 06/11/2026; `targeting` removed from bidders
  → BidRequestForwarder  builds per-bidder outbound request (see §7)
  → FanOutService        parallel calls with a single auction deadline; per-bidder dispatch:
                          endpoint mock:* → in-process MockBidderClient, else HTTP BidderClient
@@ -84,7 +86,7 @@ BidController (typed: @RequestBody BidRequest → ResponseEntity<BidResponse>; d
  → async after response: AuctionEventLogger (always)
 ```
 
-Format derivation per request: union over imps (`banner` present → BANNER, `video` → VIDEO). A bidder is eligible if its `targeting.formats` intersects the request's formats.
+Format derivation per request: union over imps (`banner` present → BANNER, `video` → VIDEO). Used only for the event log (no format targeting).
 
 ## 7. Outbound requests, concurrency, tmax
 
@@ -92,7 +94,7 @@ Format derivation per request: union over imps (`banner` present → BANNER, `vi
 - Outbound body: a MapStruct copy of the parsed request (`OrtbMapper.copyWithTmax`) with `tmax` overwritten — nested beans shared by reference (read-only downstream), collections re-wrapped. **Fields not covered by the model are dropped** (dsl-json compiled mode has no unknown-field capture); declared `ext` maps survive. Accepted for the simulator — mirrors an exchange rebuilding requests.
 - Fan-out: one `CompletableFuture.supplyAsync` per eligible bidder on a shared `Executors.newVirtualThreadPerTaskExecutor()` bean; gather with a single deadline of `effectiveTmax` (`orTimeout`/timed join). Late, failed, non-200, or unparseable bidders are dropped; each per-bidder outcome recorded as `BID | NO_BID(204) | TIMEOUT | ERROR` with latency for the event log + metrics.
 - Outbound client (prod pattern): dedicated JDK `HttpClient` bean — HTTP/2, `Executors.newVirtualThreadPerTaskExecutor()`, connect timeout 100 ms — wrapped in `JdkClientHttpRequestFactory` with read timeout 1000 ms (hard cap); the real per-auction bound is the future deadline. `RestClient` built on that factory with converters cleared and replaced by the single `DslJsonHttpMessageConverter`, default `Content-Type`/`Accept: application/json` headers.
-- Failure isolation: one bidder's exception never affects others or the caller.
+- Failure isolation: one bidder's failure never affects others or the caller. Timeouts are values (`CompletableFuture.completeOnTimeout`), 4xx/5xx are values (`RestClient.exchange`).
 
 ## 8. Auction: winner, macros, nurl
 
@@ -105,7 +107,7 @@ Format derivation per request: union over imps (`banner` present → BANNER, `vi
 
 ## 9. Event log & observability
 
-- **Auction event log**: exactly one structured JSON line per auction on logger `AUCTION_EVENTS` (event record serialized with dsl-json via `DslJsonSerializer`, logged through a dedicated `%msg%n` appender — no logstash encoder needed): auctionId, accountKey, publisherId, requested formats, eligible bidder names, per-bidder `{name, outcome, latencyMs, price?}`, winner + clearing price, response status, total latency. Loki-ready; not stored in Mongo.
+- **Auction event log**: exactly one structured JSON line per auction on logger `AUCTION_EVENTS` (event record serialized with dsl-json via `DslJsonSerializer`, logged through a dedicated `%msg%n` appender — no logstash encoder needed): auctionId, sourceId, publisherId (null on source fallback), supplierType (whose config applied), requested formats, eligible bidder names, per-bidder `{name, outcome, latencyMs, price?}`, winner + clearing price, response status, total latency. Loki-ready; not stored in Mongo.
 - **Metrics** (Micrometer → OTLP via `micrometer-registry-otlp`): counters `auctions_total`, `nobid_total{reason}`, `bidder_requests_total{bidder,outcome}`, `wins_total{bidder}`; timers `auction_duration`, `bidder_call_duration{bidder}`.
 - **Traces**: `micrometer-tracing-bridge-otel` + OTLP span exporter; server span per auction, child span per bidder call.
 - Exporters must degrade silently when no collector is reachable (local dev).
@@ -133,15 +135,15 @@ Format derivation per request: union over imps (`banner` present → BANNER, `vi
 com.ming.sspexchange
 ├── api            BidController, GlobalExceptionHandler
 ├── config         DslJson bean, DslJsonHttpMessageConverter, WebMvcConfig, bidder HttpClient/RestClient, virtual-thread executor bean, OTLP, @ConfigurationProperties
-├── model
+├── model          RtbContext, RtbData (per-request state)
 │   ├── openrtb    dsl-json classes (§10)
-│   └── entity     AccountEntity, PublisherEntity, BidderEntity (Spring Data)
-├── repository     AccountRepository, PublisherRepository, BidderRepository
+│   └── entity     SupplyPartner, Bidder (Spring Data)
+├── repository     SupplyPartnerRepository, BidderRepository
 ├── cache          PartnerConfigCache (+ snapshot record, refresher)
 └── service
-    ├── supply     SupplyResolver, RequestValidator
-    ├── demand     BidderTargetingFilter, BidRequestForwarder, FanOutService, BidderClient, MockBidderClient
-    ├── auction    WinnerSelector, ResponseBuilder, MacroProcessor
+    ├── supply     SupplyResolver, RequestValidator, RejectReason
+    ├── demand     BidRequestForwarder, FanOutService, BidderClient, MockBidderClient
+    ├── auction    RtbOrchestrator, RtbOutcome, WinnerSelector, ResponseBuilder, MacroProcessor
     ├── mapper     OrtbMapper (MapStruct)
     └── event      AuctionEventLogger
 ```
@@ -155,8 +157,8 @@ com.ming.sspexchange
 
 ## 13. Testing
 
-- **Unit**: WinnerSelector (floor filter, tie, empty, wrong impid), BidderTargetingFilter (format/country/status matrix, missing geo), MacroProcessor, tmax clamping, SupplyResolver (403 cases), MockBidderClient (bid/no-config/bidRate-0/fabricated fields; latency-beyond-deadline → TIMEOUT via fan-out), dsl-json round-trip (§10).
-- **Integration** (`@SpringBootTest` + Testcontainers Mongo + WireMock): two stubbed bidders — one bids, one delays past tmax → assert 200 + winner correctness + macro-substituted `adm`/`nurl` in the returned bid; mock-only demand → 200 without any HTTP bidder; no-bidders-bid → 204; bad account → 403; malformed body → 400. Seed fixtures reused from `src/main/resources/seed/`.
+- **Unit**: WinnerSelector (floor filter, tie, empty, wrong impid), MacroProcessor, tmax clamping, SupplyResolver (403 cases), MockBidderClient (bid/no-config/bidRate-0/fabricated fields; latency-beyond-deadline → TIMEOUT via fan-out), dsl-json round-trip (§10).
+- **Integration** (`@SpringBootTest` + Testcontainers Mongo + WireMock): two stubbed bidders — one bids, one delays past tmax → assert 200 + winner correctness + macro-substituted `adm`/`nurl` in the returned bid; mock-only demand → 200 without any HTTP bidder; no-bidders-bid → 204; unknown source → 403; source id not 3 chars → 400; unknown publisher → source fallback; paused publisher → 403; malformed body → 400. Seed fixtures reused from `src/main/resources/seed/`.
 - User runs all builds/tests: plan must hand over exact `./mvnw` commands.
 
 ## 14. Deployment
