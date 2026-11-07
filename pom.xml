@@ -9,7 +9,7 @@
         <relativePath/> <!-- lookup parent from repository -->
     </parent>
     <groupId>com.ming</groupId>
-    <artifactId>SSP-Exchange</artifactId>
+    <artifactId>ssp-ming-exchange</artifactId>
     <version>0.0.1-SNAPSHOT</version>
     <name>SSP-Exchange</name>
     <description>SSP-Exchange</description>
