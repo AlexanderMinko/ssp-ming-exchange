@@ -12,7 +12,6 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 
 import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -20,17 +19,18 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.dao.DuplicateKeyException;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.MongoDBContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 import com.github.tomakehurst.wiremock.WireMockServer;
-import com.ming.sspexchange.cache.PartnerConfigCache;
+import com.ming.sspexchange.cache.BidderCache;
+import com.ming.sspexchange.cache.SupplyPartnerCache;
 import com.ming.sspexchange.model.entity.Bidder;
-import com.ming.sspexchange.model.entity.MockConfig;
-import com.ming.sspexchange.model.entity.SupplyPartnerType;
-import com.ming.sspexchange.model.entity.PartnerStatus;
 import com.ming.sspexchange.model.entity.SupplyPartner;
+import com.ming.sspexchange.model.entity.SupplyPartnerType;
 import com.ming.sspexchange.repository.BidderRepository;
 import com.ming.sspexchange.repository.SupplyPartnerRepository;
 
@@ -42,15 +42,22 @@ class ExchangeIntegrationTest {
     @ServiceConnection
     static MongoDBContainer mongo = new MongoDBContainer("mongo:7");
 
+    // Started in a static block, not @BeforeAll, so its port exists before the context reads base-url.
     static WireMockServer wm = new WireMockServer(0);
+    static { wm.start(); }
     static final HttpClient http = HttpClient.newHttpClient();
 
     @LocalServerPort int port;
     @Autowired SupplyPartnerRepository suppliers;
     @Autowired BidderRepository bidders;
-    @Autowired PartnerConfigCache cache;
+    @Autowired SupplyPartnerCache supplyPartnerCache;
+    @Autowired BidderCache bidderCache;
 
-    @BeforeAll static void startWm() { wm.start(); }
+    @DynamicPropertySource
+    static void bidderBaseUrl(DynamicPropertyRegistry registry) {
+        registry.add("exchange.bidder.base-url", wm::baseUrl);
+    }
+
     @AfterAll static void stopWm() { wm.stop(); }
 
     @BeforeEach
@@ -59,19 +66,16 @@ class ExchangeIntegrationTest {
         suppliers.deleteAll(); bidders.deleteAll();
 
         suppliers.save(SupplyPartner.builder().id("src-doc-1").entityType(SupplyPartnerType.SOURCE)
-                .sourceId("amz").name("Amazon source").status(PartnerStatus.ACTIVE).build());
+                .sourceId("amz").name("Amazon source").build());
         suppliers.save(SupplyPartner.builder().id("pub-doc-1").entityType(SupplyPartnerType.PUBLISHER)
-                .publisherId("pub-100").name("News Pub").status(PartnerStatus.ACTIVE).build());
-        suppliers.save(SupplyPartner.builder().id("pub-doc-2").entityType(SupplyPartnerType.PUBLISHER)
-                .publisherId("pub-200").name("Paused Pub").status(PartnerStatus.PAUSED).build());
+                .publisherId("pub-100").name("News Pub").build());
         bidders.save(Bidder.builder().id("bidder-a").name("alpha").seat("seat-alpha")
-                .endpoint(wm.baseUrl() + "/bidder-a").status(PartnerStatus.ACTIVE)
-                .build());
+                .endpoint("/bidder-a").build());
         bidders.save(Bidder.builder().id("bidder-b").name("beta").seat("seat-beta")
-                .endpoint(wm.baseUrl() + "/bidder-b").status(PartnerStatus.ACTIVE)
-                .build());
+                .endpoint("/bidder-b").build());
 
-        cache.refresh();
+        supplyPartnerCache.refresh();
+        bidderCache.refresh();
     }
 
     private HttpResponse<String> sendBid(String sourceId, String body) throws Exception {
@@ -108,25 +112,6 @@ class ExchangeIntegrationTest {
     }
 
     @Test
-    void mockBidderProvidesDemandWithoutAnyDsp() throws Exception {
-        bidders.deleteAll();
-        bidders.save(Bidder.builder().id("bidder-m").name("mock-alpha").seat("seat-mock")
-                .endpoint("mock:alpha").status(PartnerStatus.ACTIVE)
-                .mock(MockConfig.builder().price(3.0).latencyMs(10).bidRate(1.0).build())
-                .build());
-        cache.refresh();
-
-        var response = sendBid("amz", fixture());
-
-        assertThat(response.statusCode()).isEqualTo(200);
-        assertThat(response.body()).contains("\"seat\":\"seat-mock\"")
-                .contains("\"price\":3.0")
-                .contains("auction req-1")          // ${AUCTION_ID} substituted in mock adm
-                .contains("price=3.0");             // ${AUCTION_PRICE} substituted in mock nurl
-        assertThat(wm.getAllServeEvents()).isEmpty();
-    }
-
-    @Test
     void allNoBidsReturns204() throws Exception {
         wm.stubFor(post("/bidder-a").willReturn(aResponse().withStatus(204)));
         wm.stubFor(post("/bidder-b").willReturn(aResponse().withStatus(204)));
@@ -135,13 +120,15 @@ class ExchangeIntegrationTest {
     }
 
     @Test
-    void unknownSourceReturns403() throws Exception {
-        assertThat(sendBid("zzz", fixture()).statusCode()).isEqualTo(403);
+    void unknownSourceReturns204() throws Exception {
+        assertThat(sendBid("zzz", fixture()).statusCode()).isEqualTo(204);
+        assertThat(wm.getAllServeEvents()).as("rejected before any bidder call").isEmpty();
     }
 
     @Test
-    void sourceIdOfWrongLengthReturns400() throws Exception {
-        assertThat(sendBid("who-dis", fixture()).statusCode()).isEqualTo(400);
+    void sourceIdOfWrongLengthReturns204() throws Exception {
+        assertThat(sendBid("who-dis", fixture()).statusCode()).isEqualTo(204);
+        assertThat(wm.getAllServeEvents()).as("rejected before any bidder call").isEmpty();
     }
 
     @Test
@@ -150,12 +137,7 @@ class ExchangeIntegrationTest {
         wm.stubFor(post("/bidder-b").willReturn(aResponse().withStatus(204)));
         var body = fixture().replace("pub-100", "pub-999");
         assertThat(sendBid("amz", body).statusCode()).isEqualTo(204);
-    }
-
-    @Test
-    void pausedPublisherReturns403() throws Exception {
-        var body = fixture().replace("pub-100", "pub-200");
-        assertThat(sendBid("amz", body).statusCode()).isEqualTo(403);
+        assertThat(wm.getAllServeEvents()).as("auction ran under the source's config").hasSize(2);
     }
 
     @Test
@@ -164,20 +146,21 @@ class ExchangeIntegrationTest {
     }
 
     @Test
-    void invalidOrtbReturns400() throws Exception {
+    void invalidOrtbReturns204() throws Exception {
         var body = fixture().replace("\"imp\"", "\"imp_removed\"");
-        assertThat(sendBid("amz", body).statusCode()).isEqualTo(400);
+        assertThat(sendBid("amz", body).statusCode()).isEqualTo(204);
+        assertThat(wm.getAllServeEvents()).as("rejected before any bidder call").isEmpty();
     }
 
     @Test
     void duplicatePublisherIdIsRejectedButSourcesAreNot() {
         // Sources have no publisherId; the partial index must not treat them as duplicates.
         suppliers.save(SupplyPartner.builder().id("src-doc-2").entityType(SupplyPartnerType.SOURCE)
-                .sourceId("lft").name("Liftoff source").status(PartnerStatus.ACTIVE).build());
+                .sourceId("lft").name("Liftoff source").build());
 
         assertThatThrownBy(() -> suppliers.save(SupplyPartner.builder().id("pub-doc-dup")
                 .entityType(SupplyPartnerType.PUBLISHER).publisherId("pub-100")
-                .name("Dup Pub").status(PartnerStatus.ACTIVE).build()))
+                .name("Dup Pub").build()))
                 .isInstanceOf(DuplicateKeyException.class);
     }
 }

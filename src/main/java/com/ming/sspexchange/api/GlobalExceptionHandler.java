@@ -12,7 +12,8 @@ import lombok.extern.slf4j.Slf4j;
 
 /**
  * Only malformed JSON lands here: dsl-json throws while parsing and Spring's converter contract
- * requires a throw. Every other reject is an {@code RtbOutcome.Rejected} value, not an exception.
+ * requires a throw, and it stays a 400. Every other reject is an empty result from RtbOrchestrator
+ * (answered with 204), not an exception.
  */
 @Slf4j
 @RestControllerAdvice
@@ -22,8 +23,8 @@ public class GlobalExceptionHandler {
     private final ExchangeMetrics metrics;
 
     @ExceptionHandler(HttpMessageNotReadableException.class)
-    public ResponseEntity<Void> unreadable(HttpMessageNotReadableException e) {
-        log.debug("400 malformed body: {}", e.getMessage());
+    public ResponseEntity<Void> unreadable(HttpMessageNotReadableException exception) {
+        log.debug("400 malformed body: {}", exception.getMessage());
         metrics.rejectMalformed();
         return ResponseEntity.badRequest().build();
     }

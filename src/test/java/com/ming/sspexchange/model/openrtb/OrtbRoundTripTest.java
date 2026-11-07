@@ -41,9 +41,9 @@ class OrtbRoundTripTest {
         assertThat(new String(out, StandardCharsets.UTF_8)).doesNotContain("null"); // nulls omitted
     }
 
-    private byte[] serialize(Object o) throws IOException {
+    private byte[] serialize(Object value) throws IOException {
         var baos = new ByteArrayOutputStream();
-        dslJson.serialize(o, baos);
+        dslJson.serialize(value, baos);
         return baos.toByteArray();
     }
 }

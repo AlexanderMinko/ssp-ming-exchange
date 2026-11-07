@@ -1,7 +1,5 @@
 package com.ming.sspexchange.model.entity;
 
-import java.util.Objects;
-
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.mapping.Document;
 
@@ -11,6 +9,7 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 
+/** One demand partner. Every bidder in the collection is called on every auction (no targeting yet). */
 @Document("bidders")
 @Getter
 @Setter
@@ -22,12 +21,6 @@ public class Bidder {
     private String id;
     private String name;
     private String seat;
-    private String endpoint;   // absolute URL, or "mock:<name>" for built-in mock demand
-    private PartnerStatus status;
-    private Integer tmaxMs;
-    private MockConfig mock;
-
-    public boolean isMock() {
-        return Objects.nonNull(endpoint) && endpoint.startsWith("mock:");
-    }
+    private String endpoint;   // path on the bidders service (e.g. /bid/alpha), joined to exchange.bidder.base-url
+    private Integer tmaxMs;    // optional: shortens this bidder's deadline, never extends it
 }

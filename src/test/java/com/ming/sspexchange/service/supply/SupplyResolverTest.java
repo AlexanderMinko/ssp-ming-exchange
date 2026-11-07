@@ -10,34 +10,31 @@ import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import com.ming.sspexchange.cache.PartnerConfigCache;
-import com.ming.sspexchange.model.entity.SupplyPartnerType;
-import com.ming.sspexchange.model.entity.PartnerStatus;
+import com.ming.sspexchange.cache.SupplyPartnerCache;
+import com.ming.sspexchange.model.RtbContext;
+import com.ming.sspexchange.model.RtbData;
 import com.ming.sspexchange.model.entity.SupplyPartner;
+import com.ming.sspexchange.model.entity.SupplyPartnerType;
 import com.ming.sspexchange.model.openrtb.App;
 import com.ming.sspexchange.model.openrtb.BidRequest;
 import com.ming.sspexchange.model.openrtb.Publisher;
 import com.ming.sspexchange.model.openrtb.Site;
-import com.ming.sspexchange.model.RtbContext;
-import com.ming.sspexchange.model.RtbData;
 
 class SupplyResolverTest {
 
-    private final PartnerConfigCache cache = mock(PartnerConfigCache.class);
+    private final SupplyPartnerCache cache = mock(SupplyPartnerCache.class);
     private final SupplyResolver resolver = new SupplyResolver(cache);
 
     private static final SupplyPartner SOURCE = SupplyPartner.builder()
-            .id("s-1").entityType(SupplyPartnerType.SOURCE).sourceId("abc")
-            .status(PartnerStatus.ACTIVE).build();
+            .id("s-1").entityType(SupplyPartnerType.SOURCE).sourceId("abc").build();
     private static final SupplyPartner PUBLISHER = SupplyPartner.builder()
-            .id("p-1").entityType(SupplyPartnerType.PUBLISHER).publisherId("pub-100")
-            .status(PartnerStatus.ACTIVE).build();
+            .id("p-1").entityType(SupplyPartnerType.PUBLISHER).publisherId("pub-100").build();
 
     private static BidRequest appRequest(String publisherId) {
         var pub = new Publisher(); pub.setId(publisherId);
         var app = new App(); app.setPublisher(pub);
-        var r = new BidRequest(); r.setApp(app);
-        return r;
+        var request = new BidRequest(); request.setApp(app);
+        return request;
     }
 
     @BeforeEach
@@ -47,14 +44,20 @@ class SupplyResolverTest {
         when(cache.publisher("pub-100")).thenReturn(Optional.of(PUBLISHER));
     }
 
-    private RtbData resolved(String sourceId, BidRequest r) {
-        var ctx = RtbContext.start(r, sourceId);
+    private static RtbContext context(String sourceId, BidRequest request) {
+        var data = new RtbData();
+        data.setSourceId(sourceId);
+        return new RtbContext(request, data);
+    }
+
+    private RtbData resolved(String sourceId, BidRequest request) {
+        var ctx = context(sourceId, request);
         assertThat(resolver.resolve(ctx)).isEmpty();
         return ctx.data();
     }
 
-    private void assertRejected(String sourceId, BidRequest r, RejectReason reason) {
-        assertThat(resolver.resolve(RtbContext.start(r, sourceId))).contains(reason);
+    private void assertRejected(String sourceId, BidRequest request, RejectReason reason) {
+        assertThat(resolver.resolve(context(sourceId, request))).contains(reason);
     }
 
     @Test
@@ -63,30 +66,22 @@ class SupplyResolverTest {
 
         assertThat(data.getSource()).isSameAs(SOURCE);
         assertThat(data.getPublisher()).isSameAs(PUBLISHER);
-        assertThat(data.getSupplier()).isSameAs(PUBLISHER);
-        assertThat(data.getPublisherId()).isEqualTo("pub-100");
     }
 
     @Test
     void unknownPublisherFallsBackToSource() {
         var data = resolved("abc", appRequest("pub-999"));
 
-        assertThat(data.getSupplier()).isSameAs(SOURCE);
+        assertThat(data.getSource()).isSameAs(SOURCE);
         assertThat(data.getPublisher()).isNull();
     }
 
     @Test
     void missingPublisherIdFallsBackToSource() {
-        assertThat(resolved("abc", new BidRequest()).getSupplier()).isSameAs(SOURCE);
-    }
+        var data = resolved("abc", new BidRequest());
 
-    @Test
-    void pausedPublisherIsRejected() {
-        var paused = SupplyPartner.builder().id("p-2").entityType(SupplyPartnerType.PUBLISHER)
-                .publisherId("pub-200").status(PartnerStatus.PAUSED).build();
-        when(cache.publisher("pub-200")).thenReturn(Optional.of(paused));
-
-        assertRejected("abc", appRequest("pub-200"), RejectReason.PAUSED_PUBLISHER);
+        assertThat(data.getSource()).isSameAs(SOURCE);
+        assertThat(data.getPublisher()).isNull();
     }
 
     @Test
@@ -108,19 +103,11 @@ class SupplyResolverTest {
     }
 
     @Test
-    void pausedSourceIsRejected() {
-        var paused = SupplyPartner.builder().id("s-2").entityType(SupplyPartnerType.SOURCE)
-                .sourceId("old").status(PartnerStatus.PAUSED).build();
-        when(cache.source("old")).thenReturn(Optional.of(paused));
-        assertRejected("old", appRequest("pub-100"), RejectReason.UNKNOWN_SOURCE);
-    }
-
-    @Test
     void siteRequestsResolveViaSitePublisher() {
         var pub = new Publisher(); pub.setId("pub-100");
         var site = new Site(); site.setPublisher(pub);
-        var r = new BidRequest(); r.setSite(site);
+        var request = new BidRequest(); request.setSite(site);
 
-        assertThat(resolved("abc", r).getPublisherId()).isEqualTo("pub-100");
+        assertThat(resolved("abc", request).getPublisher()).isSameAs(PUBLISHER);
     }
 }

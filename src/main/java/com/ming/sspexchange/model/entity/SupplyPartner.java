@@ -28,5 +28,4 @@ public class SupplyPartner {
     private String publisherId;   // PUBLISHER only, globally unique
     private String sourceId;      // SOURCE only, always 3 chars
     private String name;
-    private PartnerStatus status;
 }

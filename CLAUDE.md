@@ -12,7 +12,7 @@ Briefs you (the terminal AI) on who I am, what I'm building, and how to work wit
 - **Core:** one HTTP endpoint that receives an **OpenRTB** bid request and returns a response sourced from a DSP. Minimal exchange workflow — only what's needed to demonstrate the path end-to-end.
 - Plus two convenience components for end-to-end testing:
   - a **supply-partner SSP** (traffic source), and
-  - a **demand-partner DSP** (bidder) — repo `…/AWS_EKS/ssp-ming-bidders` (replaces the in-process `mock:` bidders).
+  - a **demand-partner DSP** (bidder) — repo `…/AWS_EKS/ssp-ming-bidders` (the exchange's in-process `mock:` bidders were removed 07/11/2026; bidder endpoints are paths joined to `BIDDERS_BASE_URL`).
 - **Namespace: everything deploys into `production` for now** (pre-created by Terraform `platform/`, `var.app_namespaces`). Namespace-per-component (`ssp`/`exchange`/`dsp`) is a possible later split — don't assume it until decided.
 - **Per-component specifics (endpoints, payloads, exact workflow) I describe in the relevant channel.** Don't assume beyond what I've stated; ask if a detail is load-bearing and unspecified.
 
@@ -35,8 +35,11 @@ Briefs you (the terminal AI) on who I am, what I'm building, and how to work wit
 - Containerized (Docker) → ECR → EKS via Gateway API `HTTPRoute` (attached to the shared `edge/shared` Gateway), all in namespace `production`.
 - **Code style (enforce on every change):**
   - **Apache Commons Lang 3** for null-safe checks: `StringUtils.isBlank/isNotBlank/isEmpty`, `ObjectUtils.isEmpty` for collections/maps. Not `s == null || s.isBlank()`.
-  - **Prefer the Stream API over plain `for` loops.** Keep a loop only where a stream is clearly worse (checked exceptions, early-exit with side effects, sequential deadline handling like `FanOutService`) — say why in a comment.
-  - **No exceptions on the hot path** (the per-request bid flow). Expected outcomes — rejects (400/403), no-bid, bidder timeout/error — are return values, not throws. Exceptions only for genuinely exceptional failures (startup, config load, programming errors).
+  - **Prefer the Stream API over plain `for` loops.** Keep a loop only where a stream is clearly worse (checked exceptions, early-exit with side effects) — say why in a comment.
+  - **No exceptions on the hot path** (the per-request bid flow). Expected outcomes — rejects, no-bid, bidder timeout/error — are return values, not throws (`RtbOrchestrator` returns `Optional<BidResponse>`; empty = 204). Exceptions only for genuinely exceptional failures (startup, config load, programming errors).
+  - **No single-character identifiers** — variables, parameters, lambda params, loop counters included
+    (`var r`, `e ->`, `for (int i …)` are out). Use a descriptive name: `response`, `bidder`, `index`. Exception: OpenRTB model fields keep their wire names (`w`, `h`).
+  - **Always use curly braces** on `if` / `else` / `for` / `while` bodies, even one-liners.
 - **Synthetic data only.** All bid requests/responses are simulated — no real customer PII, no production revenue data. (Matches org data-handling rules.)
 
 ## Sequencing

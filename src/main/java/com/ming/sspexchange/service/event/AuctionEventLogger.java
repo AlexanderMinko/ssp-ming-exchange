@@ -26,8 +26,8 @@ public class AuctionEventLogger {
         try (var out = new ByteArrayOutputStream()) {
             dslJson.serialize(event, out);
             AUCTION_EVENTS.info(out.toString(StandardCharsets.UTF_8));
-        } catch (IOException e) {
-            LOG.warn("failed to serialize auction event {}", event.auctionId(), e);
+        } catch (IOException exception) {
+            LOG.warn("failed to serialize auction event {}", event.auctionId(), exception);
         }
     }
 }

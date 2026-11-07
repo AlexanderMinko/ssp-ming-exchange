@@ -35,15 +35,14 @@ public class ExchangeMetrics {
         registry.counter("exchange.wins", "bidder", bidder).increment();
     }
 
-    // Requests rejected before an auction runs (400 invalid / 403 supply-auth). Kept out of the
+    // Requests rejected before an auction runs (invalid ORTB or supply). Answered with 204, kept out of the
     // AUCTION_EVENTS stream (those are real auctions) but counted so rejects stay observable.
     public void reject(RejectReason reason) {
-        registry.counter("exchange.reject",
-                "status", String.valueOf(reason.getHttpStatus()), "reason", reason.name()).increment();
+        registry.counter("exchange.reject", "reason", reason.name()).increment();
     }
 
-    // Malformed JSON never reaches the orchestrator — it fails in the message converter.
+    // Malformed JSON never reaches the orchestrator — it fails in the message converter. Still a 400.
     public void rejectMalformed() {
-        registry.counter("exchange.reject", "status", "400", "reason", "MALFORMED_JSON").increment();
+        registry.counter("exchange.reject", "reason", "MALFORMED_JSON").increment();
     }
 }

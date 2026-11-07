@@ -15,8 +15,4 @@ class SspExchangeApplicationTests {
     @ServiceConnection
     static MongoDBContainer mongo = new MongoDBContainer("mongo:7");
 
-    @Test
-    void contextLoads() {
-    }
-
 }

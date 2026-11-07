@@ -40,8 +40,8 @@ public class DslJsonHttpMessageConverter extends AbstractHttpMessageConverter<Ob
     protected Object readInternal(Class<?> clazz, HttpInputMessage inputMessage) throws HttpMessageNotReadableException {
         try {
             return dslJson.deserialize((Type) clazz, inputMessage.getBody());
-        } catch (IOException e) {
-            throw new HttpMessageNotReadableException("Could not read JSON: %s".formatted(e.getMessage()), e, inputMessage);
+        } catch (IOException exception) {
+            throw new HttpMessageNotReadableException("Could not read JSON: %s".formatted(exception.getMessage()), exception, inputMessage);
         }
     }
 

@@ -26,12 +26,12 @@ Minimal SSP/Exchange simulator: one HTTP endpoint that accepts an OpenRTB 2.6 bi
 |---|---|
 | Fill | `200` + `BidResponse` (single seatbid, single bid) |
 | No-bid: no eligible bidders, no bids returned, all bids under floor, all bidders timed out | `204`, empty body |
-| Malformed JSON / failed ORTB validation / `sourceId` not 3 chars | `400` |
-| Missing or unknown `sourceId`, or source/publisher `status != ACTIVE` | `403` |
+| Reject: failed ORTB validation, missing/unknown/wrong-length `sourceId` (07/11/2026: was 400/403; partner statuses removed 07/11/2026) | `204`, empty body; reason in the `exchange.reject` metric |
+| Malformed JSON (fails in the converter, before the serving flow) | `400` |
 
-Supply identification (updated 01/11/2026): `sourceId` from the query param → SOURCE supplier. Publisher external id read from the body (`app.publisher.id` if `app` present, else `site.publisher.id`) → PUBLISHER supplier looked up by that id alone (global). If the publisher is registered, its config applies (a paused one → 403). If it is unregistered or `publisher.id` is absent, the source's config applies.
+Supply identification (updated 01/11/2026): `sourceId` from the query param → SOURCE supplier. Publisher external id read from the body (`app.publisher.id` if `app` present, else `site.publisher.id`) → PUBLISHER supplier looked up by that id alone (global). If the publisher is registered, its config applies. If it is unregistered or `publisher.id` is absent, the source's config applies.
 
-Validation rules (400 on failure): `id` present; ≥ 1 `imp`; every imp has `banner` or `video`; `imp.bidfloor` if present is a valid non-negative number; `app` xor `site` present (`publisher.id` is optional — absent falls back to the source).
+Validation rules (204 on failure): `id` present; ≥ 1 `imp`; every imp has `banner` or `video`; `imp.bidfloor` if present is a valid non-negative number; `app` xor `site` present (`publisher.id` is optional — absent falls back to the source).
 
 ## 4. Mongo data model
 
@@ -42,20 +42,19 @@ One collection for publishers and sources (replaces `publishers`, 01/11/2026). A
 ```
 { _id, entityType: "PUBLISHER"|"SOURCE",
   publisherId (PUBLISHER only — external id matched against request body),
-  sourceId (SOURCE only — 3-char URL param), name, status }
+  sourceId (SOURCE only — 3-char URL param), name }
 ```
 Uniqueness: `sourceId` for sources, `publisherId` for publishers (global). `publisherId` has a unique partial index (`publisherId_unique`, PUBLISHER documents only), which `ConfigSeeder` creates at startup.
 
 ### `bidders`
 ```
-{ _id, name, seat, endpoint (absolute URL, or "mock:<name>" for built-in mock demand), status,
-  tmaxMs (optional per-bidder override),
-  mock (required when endpoint is mock:*): { price, latencyMs (opt, default 0), bidRate (opt 0.0–1.0, default 1.0) } }
+{ _id, name, seat, endpoint (path on the bidders service, e.g. "/bid/alpha"),
+  tmaxMs (optional per-bidder override) }
 ```
 
-**Mock demand (until the dummy DSP exists):** a bidder whose `endpoint` starts with `mock:` is served in-process by a `MockBidderClient` instead of HTTP — it sleeps `latencyMs` (virtual thread; still subject to the fan-out deadline, so latency > timeout genuinely produces TIMEOUT), bids with probability `bidRate`, and fabricates a single-bid `BidResponse` at the fixed `price` with macro placeholders in `adm`/`nurl`. Everything downstream (auction, floors, macros, event log, metrics) treats mock and HTTP bidders identically. Deploying the real DSP later = updating `endpoint` in Mongo; zero code changes.
+**Demand (07/11/2026):** every bidder is HTTP. The in-process `mock:` bidders (`MockBidderClient`, `MockConfig`) are removed — demand comes from the bidders service (`ssp-ming-bidders`, `POST /bid/{bidderKey}`). `exchange.bidder.base-url` (env `BIDDERS_BASE_URL`, set from helm values to the bidders Service URL) is the RestClient base URL, and each bidder's `endpoint` path resolves against it, so Mongo never holds cluster DNS names. Seed: alpha, beta (tmax 200 ms), gamma; gamma's latency on the bidders side exceeds the deadline, so it exercises TIMEOUT.
 
-Seeding: JSON fixtures in `src/main/resources/seed/` (also used by tests), loaded via `scripts/seed.sh` (mongosh). Fixtures: 3 sources (1 paused), 3 publishers, 3 bidders.
+Seeding: JSON fixtures in `src/main/resources/seed/` (also used by tests), loaded via `scripts/seed.sh` (mongosh). Fixtures: 2 sources, 2 publishers, 3 bidders (statuses removed 07/11/2026 — a partner is on or off by being in the collection).
 
 ## 5. Config cache
 
@@ -73,16 +72,14 @@ BidController (typed: @RequestBody BidRequest → ResponseEntity<BidResponse>; d
 RtbContext (one per request) = adRequest + RtbData. RtbData collects everything the flow learns:
   source, publisher (null → source config applies), formats, effectiveTmax, eligibleBidders,
   bidderResults, winner. Stages read/write it instead of passing values between them.
- → SupplyResolver       sourceId → Source; body → Publisher, else fall back to Source; writes RtbData, returns Optional<RejectReason>
- → RequestValidator     rules from §3; returns Optional<RejectReason>
-   (RtbOrchestrator returns RtbOutcome = Fill | NoBid | Rejected; BidController maps it to a status.
+ → SupplyResolver       sourceId → Source; body → Publisher, else fall back to Source; writes RtbContext, returns Optional<RejectReason>
+ → RequestValidationService     rules from §3; returns Optional<RejectReason>
+   (RtbOrchestrator returns Optional<BidResponse> — empty on a no-bid or a reject, 07/11/2026; BidController
+    answers 200 or 204. RtbOutcome removed.
     No exceptions on the hot path — updated 06/11/2026. Only malformed JSON still throws, inside the converter.)
- → (no targeting)      every bidder with status ACTIVE is eligible — BidderTargetingFilter removed 06/11/2026; `targeting` removed from bidders
- → BidRequestForwarder  builds per-bidder outbound request (see §7)
- → FanOutService        parallel calls with a single auction deadline; per-bidder dispatch:
-                         endpoint mock:* → in-process MockBidderClient, else HTTP BidderClient
- → WinnerSelector       first-price winner (see §8)
- → ResponseBuilder      single-seat BidResponse + adm/nurl macro substitution
+ → (no targeting)      every configured bidder is eligible — statuses removed 07/11/2026; BidderTargetingFilter removed 06/11/2026
+ → BidderService        tmax policy, per-bidder request copy with its own tmax (see §7), parallel HTTP calls with a single auction deadline (BidderClient folded in 07/11/2026)
+ → AuctionService       first-price winner (see §8) + single-seat BidResponse with adm/nurl macro substitution (WinnerSelector, ResponseBuilder, MacroProcessor folded in 07/11/2026)
  → async after response: AuctionEventLogger (always)
 ```
 
@@ -141,9 +138,10 @@ com.ming.sspexchange
 ├── repository     SupplyPartnerRepository, BidderRepository
 ├── cache          PartnerConfigCache (+ snapshot record, refresher)
 └── service
-    ├── supply     SupplyResolver, RequestValidator, RejectReason
-    ├── demand     BidRequestForwarder, FanOutService, BidderClient, MockBidderClient
-    ├── auction    RtbOrchestrator, RtbOutcome, WinnerSelector, ResponseBuilder, MacroProcessor
+    ├── (root)     RtbOrchestrator
+    ├── supply     SupplyResolver, RequestValidationService, RejectReason
+    ├── demand     BidderService (builds per-bidder requests + fan-out), BidderClient
+    ├── auction    AuctionService, BidResponseValidationService, WinningBid
     ├── mapper     OrtbMapper (MapStruct)
     └── event      AuctionEventLogger
 ```
@@ -157,15 +155,15 @@ com.ming.sspexchange
 
 ## 13. Testing
 
-- **Unit**: WinnerSelector (floor filter, tie, empty, wrong impid), MacroProcessor, tmax clamping, SupplyResolver (403 cases), MockBidderClient (bid/no-config/bidRate-0/fabricated fields; latency-beyond-deadline → TIMEOUT via fan-out), dsl-json round-trip (§10).
-- **Integration** (`@SpringBootTest` + Testcontainers Mongo + WireMock): two stubbed bidders — one bids, one delays past tmax → assert 200 + winner correctness + macro-substituted `adm`/`nurl` in the returned bid; mock-only demand → 200 without any HTTP bidder; no-bidders-bid → 204; unknown source → 403; source id not 3 chars → 400; unknown publisher → source fallback; paused publisher → 403; malformed body → 400. Seed fixtures reused from `src/main/resources/seed/`.
+- **Unit**: BidResponseValidationService (floor, impid, adm), AuctionService (first price, tie, macros), tmax clamping, SupplyResolver (reject reasons), dsl-json round-trip (§10).
+- **Integration** (`@SpringBootTest` + Testcontainers Mongo + WireMock): two stubbed bidders — one bids, one delays past tmax → assert 200 + winner correctness + macro-substituted `adm`/`nurl` in the returned bid; no-bidders-bid → 204; unknown source → 204; source id not 3 chars → 204; unknown publisher → source fallback (both bidders called); invalid ORTB → 204 (each reject also asserts no bidder was called); malformed body → 400. Seed fixtures reused from `src/main/resources/seed/`.
 - User runs all builds/tests: plan must hand over exact `./mvnw` commands.
 
 ## 14. Deployment
 
 - **Docker**: multi-stage (JDK 25 build → JRE 25 runtime), non-root. Push to ECR `140023370575.dkr.ecr.eu-central-1.amazonaws.com/eks-dev/app`, tag `exchange-<version>`.
 - **K8s manifests: deferred** — authored later by the user. Decisions that stand: namespace `production` for this service (ssp/dsp get their own later), edge via Gateway API `HTTPRoute`, in-cluster single-replica MongoDB, health probes on actuator endpoints.
-- **Local dev**: `docker-compose.yml` (mongo + auto-seed container); app via `./mvnw spring-boot:run`. Seed ships mock bidders, so the exchange fills (200) from the very first run — no DSP required.
+- **Local dev**: `docker-compose.yml` (mongo + bidders; the apps seed themselves); app via `./mvnw spring-boot:run`. Compose also runs the bidders service (built from `../ssp-ming-bidders`, published on 8081), so the exchange fills (200) from the first run.
 - User executes all build/deploy commands; plan provides docker build/push commands.
 
 ## 15. Out of scope (v1)
@@ -174,6 +172,6 @@ Second-price, deals/PMP, server-side win-notice firing (`nurl` returned in the b
 
 ## 16. Sequencing after v1
 
-1. Dummy DSP service (own repo/namespace): configurable bid behavior (price ranges, no-bid rate, latency jitter) — becomes the target of `bidders.endpoint`, replacing the built-in `mock:` bidders via a Mongo config update only.
+1. ~~Dummy DSP service~~ — done as `ssp-ming-bidders` (07/11/2026); the `mock:` bidders are removed.
 2. Dummy supply SSP: traffic generator posting synthetic 2.6 requests at the exchange.
 3. Wire end-to-end across namespaces; then LGTM dashboards off the OTLP/AUCTION_EVENTS data.

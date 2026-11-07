@@ -4,7 +4,6 @@ import org.mapstruct.Mapper;
 import org.mapstruct.Mapping;
 import org.mapstruct.MappingConstants;
 
-import com.ming.sspexchange.model.openrtb.Bid;
 import com.ming.sspexchange.model.openrtb.BidRequest;
 
 @Mapper(componentModel = MappingConstants.ComponentModel.SPRING)
@@ -16,6 +15,4 @@ public interface OrtbMapper {
     @Mapping(target = "tmax", source = "newTmax")
     BidRequest copyWithTmax(BidRequest source, Integer newTmax);
 
-    // Flat copy so macro substitution never mutates the bidder's original response object.
-    Bid copy(Bid source);
 }

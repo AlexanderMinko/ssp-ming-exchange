@@ -1,11 +1,18 @@
-# Local MongoDB for the exchange. Seeding is done by the app itself at startup (ConfigSeeder),
-# so there's no separate seed container. Run the app with `./mvnw spring-boot:run` and it will
-# create the baseline config in this Mongo on boot.
+# Local stack for the exchange: Mongo plus the bidders service (ssp-ming-bidders) it fans out to.
+# Both apps seed themselves at startup (the exchange via ConfigSeeder, bidders via Liquibase).
+# Run the exchange on the host with `./mvnw spring-boot:run`; it reaches bidders at
+# http://localhost:8081 (the default exchange.bidder.base-url).
 services:
   mongo:
     image: mongo:7
     ports:
       - "27017:27017"
 
-volumes:
-  mongo-data:
+  bidders:
+    build: ../ssp-ming-bidders
+    environment:
+      MONGO_URI: mongodb://mongo:27017/ssp-bidders
+    ports:
+      - "8081:8080"
+    depends_on:
+      - mongo

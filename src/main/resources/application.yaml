@@ -10,6 +10,7 @@ spring:
 exchange:
   config-refresh-ms: ${EXCHANGE_CONFIG_REFRESH_MS:30000}
   bidder:
+    base-url: ${BIDDERS_BASE_URL:http://localhost:8081}
     connect-timeout-ms: ${EXCHANGE_BIDDER_CONNECT_TIMEOUT_MS:100}
     read-timeout-ms: ${EXCHANGE_BIDDER_READ_TIMEOUT_MS:1000}
 

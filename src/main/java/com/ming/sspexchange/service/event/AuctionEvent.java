@@ -4,6 +4,7 @@ import java.util.List;
 
 import com.dslplatform.json.CompiledJson;
 
+/** One structured log line per auction that ran (rejects never get here). Built by {@code AuctionEventMapper}. */
 @CompiledJson
 public record AuctionEvent(
         String auctionId,

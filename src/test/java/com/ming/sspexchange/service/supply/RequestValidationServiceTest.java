@@ -13,17 +13,17 @@ import com.ming.sspexchange.model.openrtb.Imp;
 import com.ming.sspexchange.model.openrtb.Publisher;
 import com.ming.sspexchange.model.openrtb.Site;
 
-class RequestValidatorTest {
+class RequestValidationServiceTest {
 
-    private final RequestValidator validator = new RequestValidator();
+    private final RequestValidationService validator = new RequestValidationService();
 
     private static BidRequest valid() {
         var banner = new Banner(); banner.setW(320); banner.setH(50);
         var imp = new Imp(); imp.setId("imp-1"); imp.setBanner(banner);
         var pub = new Publisher(); pub.setId("pub-100");
         var app = new App(); app.setPublisher(pub);
-        var r = new BidRequest(); r.setId("req-1"); r.setImp(List.of(imp)); r.setApp(app);
-        return r;
+        var request = new BidRequest(); request.setId("req-1"); request.setImp(List.of(imp)); request.setApp(app);
+        return request;
     }
 
     @Test void acceptsValidRequest() {
@@ -31,33 +31,33 @@ class RequestValidatorTest {
     }
 
     @Test void rejectsMissingId() {
-        var r = valid(); r.setId(" ");
-        assertThat(validator.validate(r)).contains(RejectReason.MISSING_REQUEST_ID);
+        var request = valid(); request.setId(" ");
+        assertThat(validator.validate(request)).contains(RejectReason.MISSING_REQUEST_ID);
     }
 
     @Test void rejectsEmptyImps() {
-        var r = valid(); r.setImp(List.of());
-        assertThat(validator.validate(r)).contains(RejectReason.MISSING_IMP);
+        var request = valid(); request.setImp(List.of());
+        assertThat(validator.validate(request)).contains(RejectReason.MISSING_IMP);
     }
 
     @Test void rejectsImpWithoutBannerOrVideo() {
         var imp = new Imp(); imp.setId("imp-1");
-        var r = valid(); r.setImp(List.of(imp));
-        assertThat(validator.validate(r)).contains(RejectReason.IMP_NO_FORMAT);
+        var request = valid(); request.setImp(List.of(imp));
+        assertThat(validator.validate(request)).contains(RejectReason.IMP_NO_FORMAT);
     }
 
     @Test void rejectsNegativeFloor() {
-        var r = valid(); r.getImp().get(0).setBidfloor(-1.0);
-        assertThat(validator.validate(r)).contains(RejectReason.NEGATIVE_BIDFLOOR);
+        var request = valid(); request.getImp().get(0).setBidfloor(-1.0);
+        assertThat(validator.validate(request)).contains(RejectReason.NEGATIVE_BIDFLOOR);
     }
 
     @Test void rejectsBothAppAndSite() {
-        var r = valid(); r.setSite(new Site());
-        assertThat(validator.validate(r)).contains(RejectReason.APP_XOR_SITE);
+        var request = valid(); request.setSite(new Site());
+        assertThat(validator.validate(request)).contains(RejectReason.APP_XOR_SITE);
     }
 
     @Test void rejectsNeitherAppNorSite() {
-        var r = valid(); r.setApp(null);
-        assertThat(validator.validate(r)).contains(RejectReason.APP_XOR_SITE);
+        var request = valid(); request.setApp(null);
+        assertThat(validator.validate(request)).contains(RejectReason.APP_XOR_SITE);
     }
 }
