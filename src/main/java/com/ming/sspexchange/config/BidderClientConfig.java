@@ -90,7 +90,7 @@ public class BidderClientConfig {
      * Names each bidder call after its bidder: span `bid alpha` instead of `http post`, and a `bidder` key value on
      * the span and on http_client_requests_seconds. Low cardinality is safe: names come from our own bidder config.
      */
-    private static ClientRequestObservationConvention bidderObservationConvention() {
+    static ClientRequestObservationConvention bidderObservationConvention() {   // package-private: unit-tested
         return new DefaultClientRequestObservationConvention() {
             @Override
             public KeyValues getLowCardinalityKeyValues(ClientRequestObservationContext context) {
