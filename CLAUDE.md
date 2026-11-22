@@ -18,7 +18,7 @@ Briefs you (the terminal AI) on who I am, what I'm building, and how to work wit
 
 ## Deployment target (the infra I already built)
 - EKS cluster **`eks-dev`**, region **`eu-central-1`** (separate Terraform repo at `…/AWS_EKS/ssp-ming-exchange-terraform`; GitOps config repo at `…/AWS_EKS/ssp-ming-exchange-helm`).
-- Images → ECR: `140023370575.dkr.ecr.eu-central-1.amazonaws.com/eks-dev/app` (eu-central-1).
+- Images → ECR: `140023370575.dkr.ecr.eu-central-1.amazonaws.com/eks-dev/exchange` (eu-central-1).
 - Edge via the **Kubernetes Gateway API** (AWS LB Controller → ALB), an `HTTPRoute` per service.
 - That cluster will also run SigNoz + VictoriaMetrics observability and an Istio ambient mesh later — so build the services to be **trace/mesh-friendly** (emit OTLP where it's cheap to).
 - **Observability stack = Start.io's** (decided 16/11/2026, replaces LGTM): **VictoriaMetrics** for metrics (`victoria-metrics-k8s-stack`: VM operator, `vmagent`, `vmsingle`, Grafana), **SigNoz on ClickHouse** for logs and traces (SigNoz `otel-agent` DaemonSet tails `/var/log/pods`; apps send traces over OTLP to the SigNoz collector). Nodes = 3 × `t3.large`.

@@ -3,8 +3,8 @@
 # Auth is OIDC: no AWS keys stored in GitHub. The role + trust live in infra/08-github-oidc.tf.
 #
 # Build flow (LEARNING — trigger on main push):
-#   git push origin main  →  build+push eks-dev/app:0.0.<run_number>  →  bump the tag in the
-#   CONFIG repo (ssp-exchange-helm)  →  Argo CD syncs → deploys. Git stays the source of truth.
+#   git push origin main  →  build+push eks-dev/exchange:0.0.<run_number>  →  bump the tag in the
+#   CONFIG repo (ssp-ming-exchange-helm)  →  Argo CD syncs → deploys. Git stays the source of truth.
 #   (Chosen over Argo CD Image Updater: simpler, immediate, and CI already knows the exact tag.)
 
 name: release
@@ -30,7 +30,7 @@ permissions:
 
 env:
   AWS_REGION: eu-central-1
-  ECR_REPOSITORY: eks-dev/app # matches aws_ecr_repository.app  ("${cluster_name}/app")
+  ECR_REPOSITORY: eks-dev/exchange # matches aws_ecr_repository.exchange ("${cluster_name}/exchange")
 
 jobs:
   build-push:
@@ -77,12 +77,12 @@ jobs:
     steps:
       # Check out a DIFFERENT repo (the config repo). GITHUB_TOKEN can't reach another repo, so we
       # authenticate with the deploy key's PRIVATE half, stored as the app-repo secret
-      # CONFIG_REPO_DEPLOY_KEY. Its PUBLIC half is a write-enabled Deploy Key on ssp-exchange-helm.
+      # CONFIG_REPO_DEPLOY_KEY. Its PUBLIC half is a write-enabled Deploy Key on ssp-ming-exchange-helm.
       # `ssh-key` also stays configured for the git push below (persist-credentials defaults to true).
       - name: Checkout config repo
         uses: actions/checkout@v4
         with:
-          repository: AlexanderMinko/ssp-exchange-helm
+          repository: AlexanderMinko/ssp-ming-exchange-helm
           ssh-key: ${{ secrets.CONFIG_REPO_DEPLOY_KEY }}
 
       # Set exchange.image.tag to the tag we just pushed, then commit. Argo CD (watching this repo)
