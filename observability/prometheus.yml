@@ -1,0 +1,27 @@
+# Scrape config for the local VictoriaMetrics single (docker-compose, -promscrape.config).
+# Prometheus format, so the file name stays. PULL model: VictoriaMetrics scrapes each app's
+# /actuator/prometheus (micrometer-registry-prometheus) every scrape_interval.
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  # VictoriaMetrics's own metrics.
+  - job_name: victoriametrics
+    static_configs:
+      - targets:
+          - localhost:8428
+
+  # Bidders runs on the host on port 8081 → reached via host.docker.internal.
+  # Start it with: SPRING_PROFILES_ACTIVE=local ./mvnw spring-boot:run (the local profile sets port 8081)
+  - job_name: bidders
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets:
+          - host.docker.internal:8081
+
+  # The exchange runs on the host (SPRING_PROFILES_ACTIVE=local ./mvnw spring-boot:run) → reached via host.docker.internal.
+  - job_name: exchange
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets:
+          - host.docker.internal:8080

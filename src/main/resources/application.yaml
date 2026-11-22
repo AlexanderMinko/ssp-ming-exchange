@@ -10,27 +10,44 @@ spring:
 exchange:
   config-refresh-ms: ${EXCHANGE_CONFIG_REFRESH_MS:30000}
   bidder:
-    base-url: ${BIDDERS_BASE_URL:http://localhost:8081}
+    # No default on purpose: a key missing from the chart's ConfigMap must fail startup, not call localhost.
+    # Local value lives in application-local.yaml (SPRING_PROFILES_ACTIVE=local).
+    base-url: ${BIDDERS_BASE_URL}
     connect-timeout-ms: ${EXCHANGE_BIDDER_CONNECT_TIMEOUT_MS:100}
-    read-timeout-ms: ${EXCHANGE_BIDDER_READ_TIMEOUT_MS:1000}
+    # Must be >= the largest bidder window: BidderService clamps tmax to 450, minus 50 overhead = 400 ms. A late
+    # call still finishes and keeps its connection (never cancelled, like ssp-backend); only a hung bidder is cut.
+    # Raise MAX_TMAX_MS and this together.
+    read-timeout-ms: ${EXCHANGE_BIDDER_READ_TIMEOUT_MS:400}
 
 management:
   endpoints:
     web:
       exposure:
-        include: ${MANAGEMENT_ENDPOINTS_EXPOSURE:health,info,metrics}
+        include: ${MANAGEMENT_ENDPOINTS_EXPOSURE:health,info,metrics,prometheus}
   endpoint:
     health:
       probes:
         enabled: true
+  # OTLP_ENDPOINT has no default (a location): the chart sets the SigNoz collector, application-local.yaml
+  # sets localhost. One base URL for both signals; metrics push stays off (metrics are pulled).
   otlp:
     metrics:
       export:
         enabled: ${OTLP_METRICS_ENABLED:false}
-        url: ${OTLP_ENDPOINT:http://localhost:4318}/v1/metrics
+        url: ${OTLP_ENDPOINT}/v1/metrics
+  # Boot 4 names. The old management.tracing.enabled / management.otlp.tracing.endpoint are deprecated at
+  # level `error` (no longer bound): with them, trace export would be ON by default (Boot's default true).
+  opentelemetry:
     tracing:
-      endpoint: ${OTLP_ENDPOINT:http://localhost:4318}/v1/traces
+      export:
+        otlp:
+          endpoint: ${OTLP_ENDPOINT}/v1/traces
   tracing:
-    enabled: ${TRACING_ENABLED:false}
+    export:
+      # Must stay true: Boot creates the W3C propagator only under this global switch. With it false, no
+      # traceparent is read or sent and every service mints its own trace id (found 21/11/2026).
+      enabled: true
+      otlp:
+        enabled: ${TRACING_ENABLED:true} # only whether spans are SENT to SigNoz
     sampling:
       probability: ${TRACING_SAMPLING_PROBABILITY:1.0}

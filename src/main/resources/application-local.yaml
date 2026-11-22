@@ -1,0 +1,29 @@
+# Laptop-only values. Activate with SPRING_PROFILES_ACTIVE=local (IntelliJ: Active profiles = local).
+# Rule: WHERE things live (hosts, URLs) has no default in application.yaml — the cluster value comes from
+# the Helm chart's ConfigMap, the laptop value from here. Tuning knobs (timeouts, toggles) keep defaults there.
+spring:
+  mongodb:
+    uri: mongodb://localhost:27017/ssp-exchange # the exchange repo's docker-compose Mongo, no auth
+
+exchange:
+  bidder:
+    base-url: http://localhost:8081 # bidders started with its own `local` profile
+
+# Logs PUSHED over OTLP to the local SigNoz (docker-compose: observability/signoz, ingester on :4318).
+# Only here: on EKS the SigNoz agent tails stdout, so the cluster sets no log endpoint and Boot creates
+# no log exporter. The OTel Logback appender is wired in logback-spring.xml (local profile).
+# Traces (TRACING_ENABLED=true) and the unused metrics push go to the same local SigNoz.
+management:
+  otlp:
+    metrics:
+      export:
+        url: http://localhost:4318/v1/metrics
+  opentelemetry:
+    logging:
+      export:
+        otlp:
+          endpoint: http://localhost:4318/v1/logs
+    tracing:
+      export:
+        otlp:
+          endpoint: http://localhost:4318/v1/traces

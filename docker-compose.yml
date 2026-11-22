@@ -1,18 +1,52 @@
-# Local stack for the exchange: Mongo plus the bidders service (ssp-ming-bidders) it fans out to.
+# Local stack for the exchange: Mongo, plus VictoriaMetrics + Grafana for metrics (same backend as EKS).
+# Both apps run on the host, not in this stack:
+#   exchange (port 8080):  SPRING_PROFILES_ACTIVE=local ./mvnw spring-boot:run
+#   bidders  (port 8081):  in ../ssp-ming-bidders, SPRING_PROFILES_ACTIVE=local ./mvnw spring-boot:run
+#                          (its own Mongo comes from that repo's docker-compose.yml, on 27018)
+# The `local` profile (application-local.yaml) points the exchange at this Mongo and at bidders on :8081.
 # Both apps seed themselves at startup (the exchange via ConfigSeeder, bidders via Liquibase).
-# Run the exchange on the host with `./mvnw spring-boot:run`; it reaches bidders at
-# http://localhost:8081 (the default exchange.bidder.base-url).
-services:
-  mongo:
-    image: mongo:7
-    ports:
-      - "27017:27017"
+# VictoriaMetrics single PULLS /actuator/prometheus from both apps through host.docker.internal
+# (scrape jobs in observability/prometheus.yml, Prometheus format); the apps' OTLP push stays off.
+# On EKS the same job is split: vmagent scrapes, vmsingle stores. Locally one binary does both.
+#
+# Logs + traces: SigNoz on ClickHouse, pulled in from observability/signoz/compose.yaml (UI on :3301,
+# OTLP in on :4317/:4318). The apps PUSH their logs over OTLP in the `local` profile only — on EKS the
+# SigNoz agent tails the pod log files instead. Paths in the included file resolve from its own folder.
+include:
+  - observability/signoz/compose.yaml
 
-  bidders:
-    build: ../ssp-ming-bidders
-    environment:
-      MONGO_URI: mongodb://mongo:27017/ssp-bidders
+services:
+#  mongo:
+#    image: mongo:7
+#    ports:
+#      - "27017:27017"
+
+  victoriametrics:
+    image: victoriametrics/victoria-metrics:v1.156.0 # same version as the EKS chart (victoria-metrics-k8s-stack 0.98.1)
+    command:
+      - -promscrape.config=/etc/victoriametrics/prometheus.yml # built-in scraper reads Prometheus-format scrape_configs
+      - -retentionPeriod=2d
+    volumes:
+      - ./observability/prometheus.yml:/etc/victoriametrics/prometheus.yml:ro
+    extra_hosts:
+      - host.docker.internal:host-gateway # lets the container reach both apps running on the host
     ports:
-      - "8081:8080"
+      - "8428:8428" # UI: /vmui, targets: /targets, Prometheus query API: /api/v1/query
+
+  grafana:
+    image: grafana/grafana:12.1.0
+    environment:
+      # Local only: no login, everyone is Admin. Never do this on a reachable Grafana.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    # Datasource and dashboards come from the sibling repo ssp-ming-monitoring (git is their source; the same
+    # JSON is loaded on EKS). Edit in the UI, then `../ssp-ming-monitoring/scripts/pull.sh <uid>`, or the
+    # change dies with this container.
+    volumes:
+      - ../ssp-ming-monitoring/provisioning:/etc/grafana/provisioning:ro
+      - ../ssp-ming-monitoring/dashboards:/var/lib/grafana/dashboards/ssp-ming:ro
+    ports:
+      - "3000:3000"
     depends_on:
-      - mongo
+      - victoriametrics

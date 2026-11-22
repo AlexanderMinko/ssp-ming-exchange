@@ -49,11 +49,16 @@ public class RtbOrchestrator {
         var ctx = new RtbContext(request, data);
 
         // 1. Admission: supply first, then ORTB validation. The first reject wins and no auction runs.
-        var reject = supplyResolver.resolve(ctx)
-                .or(() -> requestValidator.validate(request));
-        if (reject.isPresent()) {
-            log.debug("reject {}", reject.get());
-            metrics.reject(reject.get());
+        var supplyReject = supplyResolver.resolve(ctx);
+        if (supplyReject.isPresent()) {
+            log.info("Request {} rejected: {}", request.getId(), supplyReject.get());
+            metrics.reject(supplyReject.get());
+            return Optional.empty();
+        }
+        var validationFailure = requestValidator.validate(request);
+        if (validationFailure.isPresent()) {
+            log.info("Request {} failed validation: {}", request.getId(), validationFailure.get());
+            metrics.reject(validationFailure.get());
             return Optional.empty();
         }
 

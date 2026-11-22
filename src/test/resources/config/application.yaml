@@ -1,0 +1,24 @@
+# Test-only values. Spring Boot loads classpath:/config/application.yaml ON TOP of classpath:/application.yaml,
+# so this fills the keys main config leaves without a default. Tests that call bidders override
+# base-url with WireMock's URL (@DynamicPropertySource); Mongo comes from @ServiceConnection.
+exchange:
+  bidder:
+    base-url: http://localhost:1 # never called — nothing listens here
+
+# OTLP_ENDPOINT has no default in main config. Nothing listens here: a test with TRACING_ENABLED=true only logs
+# an export warning.
+management:
+  otlp:
+    metrics:
+      export:
+        url: http://localhost:1/v1/metrics
+  opentelemetry:
+    tracing:
+      export:
+        otlp:
+          endpoint: http://localhost:1/v1/traces
+  # Main config exports spans by default; tests do not, unless one sets TRACING_ENABLED=true.
+  tracing:
+    export:
+      otlp:
+        enabled: ${TRACING_ENABLED:false}

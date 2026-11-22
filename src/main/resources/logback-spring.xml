@@ -1,18 +1,63 @@
 <configuration>
     <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
-    <include resource="org/springframework/boot/logging/logback/console-appender.xml"/>
 
+    <!-- Cluster: every stdout line is one JSON object, so the SigNoz log agent can parse all of them.
+         Two shapes: Spring's own lines (CONSOLE, logstash format: @timestamp, level, logger_name, message,
+         stack_trace, MDC such as traceId once tracing is on) and the bare auction events (AUCTION_JSON).
+         A stack trace stays inside one JSON line, so no multiline parsing is needed on the agent.
+         Laptop: text on stdout, and every record also PUSHED over OTLP to the local SigNoz. -->
+
+    <!-- AUCTION_EVENTS: one bare JSON line per auction, written by AuctionEventLogger. Unchanged shape. -->
     <appender name="AUCTION_JSON" class="ch.qos.logback.core.ConsoleAppender">
         <encoder>
             <pattern>%msg%n</pattern>
         </encoder>
     </appender>
 
-    <logger name="AUCTION_EVENTS" level="INFO" additivity="false">
-        <appender-ref ref="AUCTION_JSON"/>
-    </logger>
+    <!-- Laptop (SPRING_PROFILES_ACTIVE=local). -->
+    <springProfile name="local">
+        <!-- Readable text for Spring's lines. -->
+        <include resource="org/springframework/boot/logging/logback/console-appender.xml"/>
 
-    <root level="INFO">
-        <appender-ref ref="CONSOLE"/>
-    </root>
+        <!-- OTLP push to the local SigNoz (endpoint in application-local.yaml). The appender buffers records until
+             SspExchangeApplication#otlpLogAppenderInstaller hands it the OpenTelemetry SDK. -->
+        <appender name="OTEL" class="io.opentelemetry.instrumentation.logback.appender.v1_0.OpenTelemetryAppender">
+            <captureMdcAttributes>*</captureMdcAttributes>
+        </appender>
+
+        <logger name="AUCTION_EVENTS" level="INFO" additivity="false">
+            <appender-ref ref="AUCTION_JSON"/>
+            <appender-ref ref="OTEL"/>
+        </logger>
+
+        <!-- The OTel SDK's own warnings (e.g. "failed to export" while SigNoz is down) go to the console only.
+             Sent through OTEL they would feed the exporter that is failing. -->
+        <logger name="io.opentelemetry" level="INFO" additivity="false">
+            <appender-ref ref="CONSOLE"/>
+        </logger>
+
+        <root level="INFO">
+            <appender-ref ref="CONSOLE"/>
+            <appender-ref ref="OTEL"/>
+        </root>
+    </springProfile>
+
+    <!-- Cluster and tests: Spring's lines as logstash JSON. A custom logback-spring.xml replaces Boot's
+         own setup, so logging.structured.format.console does nothing here; the encoder is set directly. -->
+    <springProfile name="!local">
+        <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder class="org.springframework.boot.logging.logback.StructuredLogEncoder">
+                <format>logstash</format>
+                <charset>UTF-8</charset>
+            </encoder>
+        </appender>
+
+        <logger name="AUCTION_EVENTS" level="INFO" additivity="false">
+            <appender-ref ref="AUCTION_JSON"/>
+        </logger>
+
+        <root level="INFO">
+            <appender-ref ref="CONSOLE"/>
+        </root>
+    </springProfile>
 </configuration>

@@ -6,6 +6,8 @@ import static com.github.tomakehurst.wiremock.client.WireMock.post;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
 
 import org.junit.jupiter.api.AfterAll;
@@ -23,6 +25,8 @@ import com.ming.sspexchange.model.openrtb.BidRequest;
 import com.ming.sspexchange.model.openrtb.Imp;
 import com.ming.sspexchange.service.mapper.OrtbMapper;
 
+import io.micrometer.observation.Observation;
+import io.micrometer.observation.ObservationHandler;
 import io.micrometer.observation.ObservationRegistry;
 
 /** The tmax policy (pure), one bidder call (WireMock) and the concurrent fan-out (WireMock). */
@@ -41,7 +45,7 @@ class BidderServiceTest {
         var httpClient = config.bidderHttpClient(props);
         var restClient = config.bidderRestClient(dslJson, httpClient, props, ObservationRegistry.NOOP);
         bidderService = new BidderService(restClient, Mappers.getMapper(OrtbMapper.class),
-                Executors.newVirtualThreadPerTaskExecutor());
+                Executors.newVirtualThreadPerTaskExecutor(), ObservationRegistry.NOOP);
     }
 
     @AfterAll
@@ -49,6 +53,11 @@ class BidderServiceTest {
 
     private static Bidder bidder(String path) {
         return Bidder.builder().id(path).name(path).seat("s").endpoint(path).build();
+    }
+
+    /** A verdict nothing else settles: these tests are about the reply, not about the deadline. */
+    private static CompletableFuture<BidderCallResult> openVerdict() {
+        return new CompletableFuture<>();
     }
 
     private static BidRequest request() {
@@ -59,7 +68,7 @@ class BidderServiceTest {
 
     @Test void effectiveTmaxDefaultsWhenAbsent()   { assertThat(BidderService.effectiveTmax(null)).isEqualTo(300); }
     @Test void effectiveTmaxClampsLow()            { assertThat(BidderService.effectiveTmax(10)).isEqualTo(100); }
-    @Test void effectiveTmaxClampsHigh()           { assertThat(BidderService.effectiveTmax(5000)).isEqualTo(1000); }
+    @Test void effectiveTmaxClampsHigh()           { assertThat(BidderService.effectiveTmax(5000)).isEqualTo(450); }
     @Test void effectiveTmaxPassesThroughInRange() { assertThat(BidderService.effectiveTmax(350)).isEqualTo(350); }
 
     @Test void outboundSubtractsOverhead()     { assertThat(BidderService.outboundTimeout(350, null)).isEqualTo(300); }
@@ -72,7 +81,7 @@ class BidderServiceTest {
             {"id":"req-1","seatbid":[{"seat":"s","bid":[{"id":"b1","impid":"imp-1","price":1.5,"adm":"<div/>"}]}]}
             """)));
 
-        var result = bidderService.call(bidder("/bid"), request());
+        var result = bidderService.call(bidder("/bid"), request(), openVerdict());
 
         assertThat(result.outcome()).isEqualTo(BidderOutcome.BID);
         assertThat(result.response().getSeatbid().get(0).getBid().get(0).getPrice()).isEqualTo(1.5);
@@ -83,25 +92,25 @@ class BidderServiceTest {
     @Test
     void http204YieldsNoBid() {
         wm.stubFor(post("/nobid").willReturn(aResponse().withStatus(204)));
-        assertThat(bidderService.call(bidder("/nobid"), request()).outcome()).isEqualTo(BidderOutcome.NO_BID);
+        assertThat(bidderService.call(bidder("/nobid"), request(), openVerdict()).outcome()).isEqualTo(BidderOutcome.NO_BID);
     }
 
     @Test
     void emptySeatbidYieldsNoBid() {
         wm.stubFor(post("/empty").willReturn(okJson("{\"id\":\"req-1\",\"seatbid\":[]}")));
-        assertThat(bidderService.call(bidder("/empty"), request()).outcome()).isEqualTo(BidderOutcome.NO_BID);
+        assertThat(bidderService.call(bidder("/empty"), request(), openVerdict()).outcome()).isEqualTo(BidderOutcome.NO_BID);
     }
 
     @Test
     void http500YieldsError() {
         wm.stubFor(post("/boom").willReturn(aResponse().withStatus(500)));
-        assertThat(bidderService.call(bidder("/boom"), request()).outcome()).isEqualTo(BidderOutcome.ERROR);
+        assertThat(bidderService.call(bidder("/boom"), request(), openVerdict()).outcome()).isEqualTo(BidderOutcome.ERROR);
     }
 
     @Test
     void malformedBodyYieldsError() {
         wm.stubFor(post("/garbage").willReturn(okJson("{not json")));
-        assertThat(bidderService.call(bidder("/garbage"), request()).outcome()).isEqualTo(BidderOutcome.ERROR);
+        assertThat(bidderService.call(bidder("/garbage"), request(), openVerdict()).outcome()).isEqualTo(BidderOutcome.ERROR);
     }
 
     @Test
@@ -120,5 +129,47 @@ class BidderServiceTest {
         assertThat(results.get(1).latencyMs()).isEqualTo(300);
         assertThat(wm.getAllServeEvents()).anySatisfy(event ->
                 assertThat(event.getRequest().getBodyAsString()).contains("\"tmax\":300"));
+    }
+
+    @Test
+    void replyAfterTheTimeoutSettledMarksTheClientObservation() {
+        wm.stubFor(post("/late").willReturn(aResponse().withStatus(204)));
+        var stopped = new CopyOnWriteArrayList<Observation.Context>();
+        var registry = ObservationRegistry.create();
+        registry.observationConfig().observationHandler(new ObservationHandler<>() {
+            @Override
+            public boolean supportsContext(Observation.Context context) {
+                return true;
+            }
+
+            @Override
+            public void onStop(Observation.Context context) {
+                stopped.add(context);
+            }
+        });
+        var props = new BidderClientProperties(wm.baseUrl(), 100, 800);
+        var config = new BidderClientConfig();
+        var restClient = config.bidderRestClient(new DslJson<>(Settings.withRuntime().includeServiceLoader()),
+                config.bidderHttpClient(props), props, registry);
+        var service = new BidderService(restClient, Mappers.getMapper(OrtbMapper.class),
+                Executors.newVirtualThreadPerTaskExecutor(), registry);
+
+        var timedOut = CompletableFuture.completedFuture(
+                new BidderCallResult(bidder("/late"), BidderOutcome.TIMEOUT, null, 250));
+
+        var result = service.call(bidder("/late"), request(), timedOut);
+
+        assertThat(result.outcome()).isEqualTo(BidderOutcome.TIMEOUT);
+        assertThat(stopped).singleElement().satisfies(context -> {
+            assertThat(context.getError()).isSameAs(BidderClientConfig.LATE_RESPONSE);
+            assertThat(context.getLowCardinalityKeyValue("outcome").getValue()).isEqualTo("TIMEOUT");
+        });
+    }
+
+    @Test
+    void replyThatSettlesTheVerdictIsNotMarked() {
+        wm.stubFor(post("/ontime").willReturn(aResponse().withStatus(204)));
+        assertThat(bidderService.call(bidder("/ontime"), request(), openVerdict()).outcome())
+                .isEqualTo(BidderOutcome.NO_BID);
     }
 }

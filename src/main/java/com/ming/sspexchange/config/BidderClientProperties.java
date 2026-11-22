@@ -11,5 +11,5 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
 public record BidderClientProperties(
         @DefaultValue("http://localhost:8081") String baseUrl,
         @DefaultValue("100") int connectTimeoutMs,
-        @DefaultValue("1000") int readTimeoutMs) {
+        @DefaultValue("400") int readTimeoutMs) {
 }
