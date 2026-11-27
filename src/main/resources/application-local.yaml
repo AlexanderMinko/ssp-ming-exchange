@@ -9,20 +9,15 @@ exchange:
   bidder:
     base-url: http://localhost:8081 # bidders started with its own `local` profile
 
-# Logs PUSHED over OTLP to the local SigNoz (docker-compose: observability/signoz, ingester on :4318).
-# Only here: on EKS the SigNoz agent tails stdout, so the cluster sets no log endpoint and Boot creates
-# no log exporter. The OTel Logback appender is wired in logback-spring.xml (local profile).
-# Traces (TRACING_ENABLED=true) and the unused metrics push go to the same local SigNoz.
+# Logs are not pushed: the local profile writes JSON lines to ~/.ssp-ming/logs/exchange.json (logback-spring.xml),
+# and the local SigNoz ingester tails that file, as the agent tails stdout on EKS.
+# Traces (TRACING_ENABLED=true) and the unused metrics push go to the local SigNoz (ingester on :4318).
 management:
   otlp:
     metrics:
       export:
         url: http://localhost:4318/v1/metrics
   opentelemetry:
-    logging:
-      export:
-        otlp:
-          endpoint: http://localhost:4318/v1/logs
     tracing:
       export:
         otlp:

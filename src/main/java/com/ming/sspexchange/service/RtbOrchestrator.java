@@ -1,5 +1,7 @@
 package com.ming.sspexchange.service;
 
+import static com.ming.sspexchange.logging.LogField.kv;
+
 import java.util.Optional;
 
 import org.springframework.stereotype.Component;
@@ -12,7 +14,6 @@ import com.ming.sspexchange.model.openrtb.BidResponse;
 import com.ming.sspexchange.service.auction.AuctionService;
 import com.ming.sspexchange.service.demand.BidderOutcome;
 import com.ming.sspexchange.service.demand.BidderService;
-import com.ming.sspexchange.service.event.AuctionEventLogger;
 import com.ming.sspexchange.service.mapper.AuctionEventMapper;
 import com.ming.sspexchange.service.mapper.BidResponseMapper;
 import com.ming.sspexchange.service.metrics.ExchangeMetrics;
@@ -38,11 +39,12 @@ public class RtbOrchestrator {
     private final AuctionService auctionService;
     private final BidResponseMapper bidResponseMapper;
     private final AuctionEventMapper eventMapper;
-    private final AuctionEventLogger eventLogger;
     private final ExchangeMetrics metrics;
 
     /** The bid response on a fill. Empty on a no-bid or a reject: the caller answers 204 either way. */
     public Optional<BidResponse> run(String sourceId, BidRequest request) {
+        // The whole inbound request, before any reject: every line of this request shares its trace id.
+        log.info("received adRequest", kv("sourceId", sourceId), kv("adRequest", request));
         var data = new RtbData();
         data.setStartNanos(System.nanoTime());
         data.setSourceId(sourceId);
@@ -51,13 +53,17 @@ public class RtbOrchestrator {
         // 1. Admission: supply first, then ORTB validation. The first reject wins and no auction runs.
         var supplyReject = supplyResolver.resolve(ctx);
         if (supplyReject.isPresent()) {
-            log.info("Request {} rejected: {}", request.getId(), supplyReject.get());
+            log.info("request rejected",
+                kv("requestId", request.getId()),
+                kv("rejectReason", supplyReject.get()));
             metrics.reject(supplyReject.get());
             return Optional.empty();
         }
         var validationFailure = requestValidator.validate(request);
         if (validationFailure.isPresent()) {
-            log.info("Request {} failed validation: {}", request.getId(), validationFailure.get());
+            log.info("request failed validation",
+                kv("requestId", request.getId()),
+                kv("rejectReason", validationFailure.get()));
             metrics.reject(validationFailure.get());
             return Optional.empty();
         }
@@ -74,8 +80,9 @@ public class RtbOrchestrator {
         // 3. Auction.
         var winner = auctionService.selectWinner(request, data.getBidderResults());
         if (winner.isEmpty()) {
-            boolean anyBids = data.getBidderResults().stream()
-                    .anyMatch(result -> result.outcome() == BidderOutcome.BID);
+            boolean anyBids = data.getBidderResults()
+                .stream()
+                .anyMatch(result -> result.outcome() == BidderOutcome.BID);
             return noBid(ctx, anyBids ? "no_valid_bids" : "no_bids");
         }
         data.setWinner(winner.get());
@@ -93,10 +100,10 @@ public class RtbOrchestrator {
         return Optional.empty();
     }
 
-    // Rejects never reach here: AUCTION_EVENTS only holds auctions that ran.
+    // Rejects never reach here: the auction lines only cover auctions that ran.
     private void finish(RtbContext ctx, int responseStatus) {
         long totalMs = (System.nanoTime() - ctx.data().getStartNanos()) / 1_000_000;
         metrics.auction(totalMs);
-        eventLogger.log(eventMapper.toEvent(ctx, responseStatus, totalMs));
+        log.info("auction", kv("auction", eventMapper.toEvent(ctx, responseStatus, totalMs)));
     }
 }

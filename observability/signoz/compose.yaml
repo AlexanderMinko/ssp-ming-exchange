@@ -3,6 +3,8 @@
 # the output of `foundryctl forge`, so no foundryctl install is needed. Local changes:
 #   - images pinned to the EKS chart's versions instead of `latest`
 #   - UI moved to host port 3301 (8080 is the exchange)
+#   - the ingester mounts ~/.ssp-ming/logs (the apps' local JSON log files, logback `local` profile) and tails
+#     them with the same operator chain as the EKS/kind agent (ingester.yaml, receiver filelog/apps)
 # Upgrading = copy the files from a newer Foundry release, then re-apply these changes.
 #
 # Same roles as on EKS, different defaults: ClickHouse Keeper instead of ZooKeeper, Postgres instead of
@@ -39,6 +41,7 @@ services:
     volumes:
     - ./ingester/ingester.yaml:/etc/otel-collector-config.yaml:ro
     - ./ingester/opamp.yaml:/etc/opamp-config.yaml:ro
+    - ${HOME}/.ssp-ming/logs:/var/log/ssp-ming:ro
   signoz-metastore-postgres-0:
     container_name: signoz-metastore-postgres-0
     environment:

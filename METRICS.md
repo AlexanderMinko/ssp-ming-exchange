@@ -96,9 +96,16 @@ VictoriaMetrics adds `up` and the `scrape_*` series itself for each scrape. `up{
 
 ## Notes
 
-- **No percentiles.** No timer exports `_bucket` series, so `histogram_quantile` does not work. Use `_sum / _count` for
-  the average and `_max` for the worst case. To get p95/p99, enable
+- **Percentiles: HTTP server only** (since 24/11/2026). `http_server_requests_seconds_bucket` exists, so
+  `histogram_quantile(0.99, sum by (le) (rate(http_server_requests_seconds_bucket{uri="/rtb/bid"}[1m])))` gives p99.
+  `HTTP_SERVER_HISTOGRAM_ENABLED=false` turns the buckets off. No other timer exports `_bucket` series. For those, use
+  `_sum / _count` for the average and `_max` for the worst case, or enable
   `management.metrics.distribution.percentiles-histogram.<metric name>` in `application.yaml`.
+- **Bucket boundaries.** Micrometer's generated ladder plus exact `slo` boundaries at 25, 50, 100, 200, **250, 300,
+  350** and 500 ms (`management.metrics.distribution.slo`). Between ladder boundaries `histogram_quantile` assumes an
+  even spread, so a percentile is only as precise as its bucket. Check: a p99 above `_max` means the bucket is too wide,
+  not that requests were slow. The 250/300/350 ms boundaries are the auction deadlines, so the share of requests over a
+  deadline is exact: `1 - sum(rate(..._bucket{le="0.3"}[1m])) / sum(rate(..._bucket{le="+Inf"}[1m]))`.
 - **`_max` is recent, not all-time.** Micrometer decays it over about 2 minutes.
 - **Two views of a bidder timeout.** `exchange_bidder_requests_total{outcome="TIMEOUT"}` counts the deadline the
   exchange enforces. `http_client_requests_seconds_count{status="CLIENT_ERROR"}` counts calls that ended in an I/O

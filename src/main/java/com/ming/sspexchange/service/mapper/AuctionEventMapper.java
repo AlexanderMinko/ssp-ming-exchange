@@ -18,7 +18,6 @@ import com.ming.sspexchange.model.openrtb.BidRequest;
 import com.ming.sspexchange.service.demand.BidderCallResult;
 import com.ming.sspexchange.service.demand.BidderOutcome;
 import com.ming.sspexchange.service.event.AuctionEvent;
-import com.ming.sspexchange.service.event.BidderOutcomeEvent;
 
 /**
  * {@link RtbContext} → {@link AuctionEvent}, the structured log record of one auction. Nested source paths
@@ -33,8 +32,7 @@ public interface AuctionEventMapper {
     @Mapping(target = "publisherId", source = "ctx.data.publisher.publisherId")
     @Mapping(target = "supplierType", expression = "java(supplierType(ctx.data()))")
     @Mapping(target = "formats", expression = "java(formats(ctx.adRequest()))")
-    @Mapping(target = "eligibleBidders", expression = "java(bidderNames(ctx.data()))")
-    @Mapping(target = "bidders", expression = "java(bidderEvents(ctx))")
+    @Mapping(target = "bidders", expression = "java(bidderResults(ctx))")
     @Mapping(target = "winner", source = "ctx.data.winner.bidder.name")
     @Mapping(target = "clearingPrice", source = "ctx.data.winner.bid.price")
     @Mapping(target = "responseStatus", source = "responseStatus")
@@ -45,6 +43,22 @@ public interface AuctionEventMapper {
     default String supplierType(RtbData data) {
         var supplier = Objects.nonNull(data.getPublisher()) ? data.getPublisher() : data.getSource();
         return supplier.getEntityType().name();
+    }
+
+    /** Every called bidder, in call order. */
+    default List<AuctionEvent.BidderResult> bidderResults(RtbContext ctx) {
+        String firstImpId = ctx.adRequest().getImp().get(0).getId();
+        return ctx.data().getBidderResults().stream()
+                .map(result -> bidderResult(result, firstImpId))
+                .toList();
+    }
+
+    // The price logged is the best one on the imp that was auctioned, not an unrelated imp's higher bid.
+    default AuctionEvent.BidderResult bidderResult(BidderCallResult result, String firstImpId) {
+        var bestPrice = result.bestPrice(firstImpId);
+        Double price = result.outcome() == BidderOutcome.BID && bestPrice.isPresent() ? bestPrice.getAsDouble() : null;
+        return new AuctionEvent.BidderResult(result.bidder().getName(), result.outcome().name(), result.latencyMs(),
+                price);
     }
 
     /** Ad formats offered by the request's imps. */
@@ -58,22 +72,4 @@ public interface AuctionEventMapper {
                 .stream().map(Enum::name).toList();
     }
 
-    /** Every bidder that was called: one call result per bidder, in call order. */
-    default List<String> bidderNames(RtbData data) {
-        return data.getBidderResults().stream().map(result -> result.bidder().getName()).toList();
-    }
-
-    default List<BidderOutcomeEvent> bidderEvents(RtbContext ctx) {
-        String firstImpId = ctx.adRequest().getImp().get(0).getId();
-        return ctx.data().getBidderResults().stream()
-                .map(result -> toBidderEvent(result, firstImpId))
-                .toList();
-    }
-
-    // The price logged is the best one on the imp that was auctioned, not an unrelated imp's higher bid.
-    default BidderOutcomeEvent toBidderEvent(BidderCallResult result, String firstImpId) {
-        var bestPrice = result.bestPrice(firstImpId);
-        Double price = result.outcome() == BidderOutcome.BID && bestPrice.isPresent() ? bestPrice.getAsDouble() : null;
-        return new BidderOutcomeEvent(result.bidder().getName(), result.outcome().name(), result.latencyMs(), price);
-    }
 }

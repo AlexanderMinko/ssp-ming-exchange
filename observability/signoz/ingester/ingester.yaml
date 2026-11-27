@@ -112,6 +112,46 @@ processors:
     metrics_exporter: signozclickhousemetrics
     metrics_flush_interval: 60s
 receivers:
+  # The apps' local JSON log files (one per service, written by the logback `local` profile). The operator chain
+  # is the one the EKS and kind agents run (07-signoz.tf), minus their container parser. Keep the three in step.
+  filelog/apps:
+    include:
+    - /var/log/ssp-ming/*.json
+    start_at: end
+    include_file_name: true
+    operators:
+    - id: json-parser
+      type: json_parser
+      if: 'body startsWith "{"'
+      parse_from: body
+      parse_to: attributes
+    - id: time-parser
+      type: time_parser
+      if: 'attributes["@timestamp"] != nil'
+      parse_from: attributes["@timestamp"]
+      layout_type: gotime
+      layout: '2006-01-02T15:04:05.000Z07:00'
+    - id: trace-parser
+      type: trace_parser
+      if: 'attributes.traceId != nil'
+      trace_id:
+        parse_from: attributes.traceId
+      span_id:
+        parse_from: attributes.spanId
+    - id: severity-parser
+      type: severity_parser
+      if: 'attributes.level != nil'
+      parse_from: attributes.level
+    - id: service-name-to-resource
+      type: move
+      if: 'attributes.service_name != nil'
+      from: attributes.service_name
+      to: resource["service.name"]
+    - id: message-to-body
+      type: move
+      if: 'attributes.message != nil'
+      from: attributes.message
+      to: body
   otlp:
     protocols:
       grpc:
@@ -134,6 +174,7 @@ service:
       - batch
       receivers:
       - otlp
+      - filelog/apps
     metrics:
       exporters:
       - signozclickhousemetrics

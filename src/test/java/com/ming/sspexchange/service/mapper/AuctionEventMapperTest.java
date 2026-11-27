@@ -22,6 +22,7 @@ import com.ming.sspexchange.model.openrtb.Video;
 import com.ming.sspexchange.service.auction.WinningBid;
 import com.ming.sspexchange.service.demand.BidderCallResult;
 import com.ming.sspexchange.service.demand.BidderOutcome;
+import com.ming.sspexchange.service.event.AuctionEvent;
 
 class AuctionEventMapperTest {
 
@@ -73,11 +74,9 @@ class AuctionEventMapperTest {
         assertThat(event.publisherId()).isEqualTo("pub-100");
         assertThat(event.supplierType()).isEqualTo("PUBLISHER");
         assertThat(event.formats()).containsExactly("BANNER", "VIDEO");
-        assertThat(event.eligibleBidders()).containsExactly("alpha", "beta");   // one per call result
-        assertThat(event.bidders()).extracting("name", "outcome", "latencyMs", "price")
-                .containsExactly(
-                        org.assertj.core.groups.Tuple.tuple("alpha", "BID", 40L, 2.5),
-                        org.assertj.core.groups.Tuple.tuple("beta", "TIMEOUT", 300L, null));
+        assertThat(event.bidders()).containsExactly(   // one per call result; imp-2's 9.0 must not leak in
+                new AuctionEvent.BidderResult("alpha", "BID", 40, 2.5),
+                new AuctionEvent.BidderResult("beta", "TIMEOUT", 300, null));
         assertThat(event.winner()).isEqualTo("alpha");
         assertThat(event.clearingPrice()).isEqualTo(2.5);
         assertThat(event.responseStatus()).isEqualTo(200);
@@ -92,7 +91,6 @@ class AuctionEventMapperTest {
 
         assertThat(event.publisherId()).isNull();
         assertThat(event.supplierType()).isEqualTo("SOURCE");
-        assertThat(event.eligibleBidders()).isEmpty();
         assertThat(event.bidders()).isEmpty();
         assertThat(event.winner()).isNull();
         assertThat(event.clearingPrice()).isNull();

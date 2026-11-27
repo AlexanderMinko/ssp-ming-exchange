@@ -28,6 +28,18 @@ management:
     health:
       probes:
         enabled: true
+  # Histogram buckets for http_server_requests (the `_bucket` series), so p99 comes from
+  # histogram_quantile() and aggregates across pods. With the `slo` boundaries it costs about 80 series per uri/method/status per pod.
+  metrics:
+    distribution:
+      percentiles-histogram:
+        http.server.requests: ${HTTP_SERVER_HISTOGRAM_ENABLED:true}
+      # Extra exact bucket boundaries, added to the generated ladder (not replacing it). The ladder has no boundary
+      # between 268 and 358 ms, so p95/p99 there were interpolated across one 89 ms bucket and overestimated (p99
+      # 350 ms above a real max of 348 ms, 24/11/2026). 250/300/350 ms are the auction deadlines (tmax - 50 for
+      # tmax 300/350/400): requests over a deadline are now an exact count, e.g. 1 - bucket{le="0.3"} / bucket{le="+Inf"}.
+      slo:
+        http.server.requests: 25ms,50ms,100ms,200ms,250ms,300ms,350ms,500ms
   # OTLP_ENDPOINT has no default (a location): the chart sets the SigNoz collector, application-local.yaml
   # sets localhost. One base URL for both signals; metrics push stays off (metrics are pulled).
   otlp:

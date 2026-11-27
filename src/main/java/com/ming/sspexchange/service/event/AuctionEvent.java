@@ -4,7 +4,11 @@ import java.util.List;
 
 import com.dslplatform.json.CompiledJson;
 
-/** One structured log line per auction that ran (rejects never get here). Built by {@code AuctionEventMapper}. */
+/**
+ * One auction that ran (rejects never get here), every called bidder included. Built by {@code AuctionEventMapper},
+ * logged by {@code RtbOrchestrator} as {@code kv("auction", event)} on one INFO line: payload.auction.*, the bidder
+ * list as payload.auction.bidders.N.* once the collector flattens it.
+ */
 @CompiledJson
 public record AuctionEvent(
         String auctionId,
@@ -12,9 +16,13 @@ public record AuctionEvent(
         String publisherId,       // null when the source config applied
         String supplierType,     // PUBLISHER | SOURCE — whose config applied
         List<String> formats,
-        List<String> eligibleBidders,
-        List<BidderOutcomeEvent> bidders,
+        List<BidderResult> bidders,   // one per called bidder, in call order
         String winner,
         Double clearingPrice,
         int responseStatus,
-        long totalLatencyMs) { }
+        long totalLatencyMs) {
+
+    /** One called bidder: the auction's verdict, its latency, and its best price on the auctioned imp (BID only). */
+    @CompiledJson
+    public record BidderResult(String name, String outcome, long latencyMs, Double price) { }
+}

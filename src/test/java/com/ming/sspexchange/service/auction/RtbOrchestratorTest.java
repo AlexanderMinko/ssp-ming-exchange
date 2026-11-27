@@ -3,17 +3,20 @@ package com.ming.sspexchange.service.auction;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
-import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
 
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mapstruct.factory.Mappers;
+import org.slf4j.LoggerFactory;
 
 import com.ming.sspexchange.cache.BidderCache;
 import com.ming.sspexchange.model.RtbContext;
@@ -32,7 +35,8 @@ import com.ming.sspexchange.service.RtbOrchestrator;
 import com.ming.sspexchange.service.demand.BidderCallResult;
 import com.ming.sspexchange.service.demand.BidderOutcome;
 import com.ming.sspexchange.service.demand.BidderService;
-import com.ming.sspexchange.service.event.AuctionEventLogger;
+import com.ming.sspexchange.logging.LogField;
+import com.ming.sspexchange.service.event.AuctionEvent;
 import com.ming.sspexchange.service.mapper.AuctionEventMapper;
 import com.ming.sspexchange.service.mapper.BidResponseMapper;
 import com.ming.sspexchange.service.metrics.ExchangeMetrics;
@@ -40,6 +44,9 @@ import com.ming.sspexchange.service.supply.RejectReason;
 import com.ming.sspexchange.service.supply.RequestValidationService;
 import com.ming.sspexchange.service.supply.SupplyResolver;
 
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 
 class RtbOrchestratorTest {
@@ -49,14 +56,44 @@ class RtbOrchestratorTest {
     private final BidderCache bidderCache = mock(BidderCache.class);
     private final BidderService bidderService = mock(BidderService.class);
     private final AuctionService auctionService = new AuctionService(new BidResponseValidationService());
-    private final AuctionEventLogger eventLogger = mock(AuctionEventLogger.class);
     private final SimpleMeterRegistry registry = new SimpleMeterRegistry();
     private final ExchangeMetrics metrics = new ExchangeMetrics(registry);
 
     private final RtbOrchestrator orchestrator = new RtbOrchestrator(
             supplyResolver, validator, bidderCache, bidderService, auctionService,
             Mappers.getMapper(BidResponseMapper.class),
-            Mappers.getMapper(AuctionEventMapper.class), eventLogger, metrics);
+            Mappers.getMapper(AuctionEventMapper.class), metrics);
+
+    private final Logger orchestratorLog = (Logger) LoggerFactory.getLogger(RtbOrchestrator.class);
+    private final ListAppender<ILoggingEvent> logged = new ListAppender<>();
+
+    @BeforeEach
+    void captureLog() {
+        logged.start();
+        orchestratorLog.addAppender(logged);
+    }
+
+    @AfterEach
+    void releaseLog() {
+        orchestratorLog.detachAppender(logged);
+    }
+
+    private List<ILoggingEvent> lines(String message) {
+        return logged.list.stream().filter(line -> message.equals(line.getMessage())).toList();
+    }
+
+    /** The AuctionEvent in the one "auction" line. */
+    private AuctionEvent auctionEvent() {
+        assertThat(lines("auction")).hasSize(1);
+        return (AuctionEvent) field(lines("auction").get(0), "auction");
+    }
+
+    private static Object field(ILoggingEvent line, String key) {
+        return Arrays.stream(line.getArgumentArray())
+                .map(LogField.class::cast)
+                .filter(logField -> logField.key().equals(key))
+                .findFirst().orElseThrow().resolvedValue();
+    }
 
     private static final Bidder ALPHA = Bidder.builder()
             .id("alpha").name("alpha").seat("seat-alpha").endpoint("/bid/alpha").build();
@@ -104,9 +141,16 @@ class RtbOrchestratorTest {
         assertThat(response.getSeatbid().get(0).getSeat()).isEqualTo("seat-alpha");
         assertThat(response.getSeatbid().get(0).getBid().get(0).getNurl())
                 .isEqualTo("http://a/win?p=2.5");
-        verify(eventLogger).log(argThat(event -> event.winner().equals("alpha") && event.responseStatus() == 200
-                && event.publisherId().equals("pub-100") && event.supplierType().equals("PUBLISHER")
-                && event.bidders().get(0).price() == 2.5));
+        var event = auctionEvent();
+        assertThat(event.winner()).isEqualTo("alpha");
+        assertThat(event.responseStatus()).isEqualTo(200);
+        assertThat(event.publisherId()).isEqualTo("pub-100");
+        assertThat(event.supplierType()).isEqualTo("PUBLISHER");
+        assertThat(event.bidders()).containsExactly(new AuctionEvent.BidderResult("alpha", "BID", 40, 2.5));
+        assertThat(lines("received adRequest")).singleElement().satisfies(line -> {
+            assertThat(field(line, "adRequest")).isSameAs(request);
+            assertThat(field(line, "sourceId")).isEqualTo("abc");
+        });
         assertThat(registry.counter("exchange.wins", "bidder", "alpha").count()).isEqualTo(1.0);
     }
 
@@ -118,7 +162,8 @@ class RtbOrchestratorTest {
 
         assertThat(orchestrator.run("abc", request)).isEmpty();
         verify(bidderService, never()).fanOut(any(), anyList());
-        verify(eventLogger).log(argThat(event -> event.responseStatus() == 204));
+        assertThat(auctionEvent().responseStatus()).isEqualTo(204);
+        assertThat(auctionEvent().bidders()).isEmpty();
         assertThat(registry.counter("exchange.nobid", "reason", "no_bidders_configured").count()).isEqualTo(1.0);
     }
 
@@ -131,7 +176,8 @@ class RtbOrchestratorTest {
                 List.of(new BidderCallResult(ALPHA, BidderOutcome.TIMEOUT, null, 300)));
 
         assertThat(orchestrator.run("abc", request)).isEmpty();
-        verify(eventLogger).log(argThat(event -> event.responseStatus() == 204));
+        assertThat(auctionEvent().responseStatus()).isEqualTo(204);
+        assertThat(auctionEvent().bidders()).containsExactly(new AuctionEvent.BidderResult("alpha", "TIMEOUT", 300, null));
         assertThat(registry.counter("exchange.nobid", "reason", "no_bids").count()).isEqualTo(1.0);
     }
 
@@ -156,7 +202,8 @@ class RtbOrchestratorTest {
         assertThat(orchestrator.run("abc", request)).isEmpty();
         assertThat(registry.counter("exchange.reject", "reason", RejectReason.MISSING_IMP.name()).count()).isEqualTo(1.0);
         verify(bidderService, never()).fanOut(any(), anyList());
-        verify(eventLogger, never()).log(any());
+        assertThat(lines("auction")).isEmpty();
+        assertThat(lines("received adRequest")).hasSize(1);   // logged before any reject
     }
 
     @Test

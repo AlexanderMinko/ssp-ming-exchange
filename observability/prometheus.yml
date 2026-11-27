@@ -21,6 +21,10 @@ scrape_configs:
 
   # The exchange runs on the host (SPRING_PROFILES_ACTIVE=local ./mvnw spring-boot:run) → reached via host.docker.internal.
   - job_name: exchange
+    # 5 s, not the global 15 s (24/11/2026): Gatling's random-level blocks last 20 s, and a 15 s scrape mixes two blocks
+    # in most intervals (fixed 20 s windows then alias to ~0.75× / ~1.5× of the real rate). Local only: EKS scrapes via the
+    # chart's ServiceMonitor (interval in charts/exchange/values.yaml). Graph with a window of at least 2 scrapes, e.g. rate(...[10s]).
+    scrape_interval: 5s
     metrics_path: /actuator/prometheus
     static_configs:
       - targets:

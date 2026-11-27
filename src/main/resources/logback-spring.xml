@@ -1,63 +1,61 @@
 <configuration>
     <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
 
-    <!-- Cluster: every stdout line is one JSON object, so the SigNoz log agent can parse all of them.
-         Two shapes: Spring's own lines (CONSOLE, logstash format: @timestamp, level, logger_name, message,
-         stack_trace, MDC such as traceId once tracing is on) and the bare auction events (AUCTION_JSON).
-         A stack trace stays inside one JSON line, so no multiline parsing is needed on the agent.
-         Laptop: text on stdout, and every record also PUSHED over OTLP to the local SigNoz. -->
+    <!-- One shape for every line (26/11/2026, ssp-backend's model): DslJsonLogbackEncoder writes one JSON object per
+         line: @timestamp, level, logger_name, thread_name, message, service_name, the MDC (traceId, spanId), then
+         payload = every kv(...) argument and SLF4J key-value pair, then stack_trace. Call sites:
+         log.info("request rejected", kv("requestId", id)), constant message, values in kv. No hand-built JSON.
+         A stack trace stays inside one JSON line, so the collectors need no multiline parsing. -->
+    <conversionRule conversionWord="kvargs" class="com.ming.sspexchange.logging.LogFieldConverter"/>
 
-    <!-- AUCTION_EVENTS: one bare JSON line per auction, written by AuctionEventLogger. Unchanged shape. -->
-    <appender name="AUCTION_JSON" class="ch.qos.logback.core.ConsoleAppender">
-        <encoder>
-            <pattern>%msg%n</pattern>
+    <appender name="JSON_CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="com.ming.sspexchange.logging.DslJsonLogbackEncoder">
+            <serviceName>exchange</serviceName>
         </encoder>
     </appender>
 
-    <!-- Laptop (SPRING_PROFILES_ACTIVE=local). -->
+    <!-- Framework noise, quietened in every profile, as ssp-backend's logback-commons-spring.xml does: these
+         libraries are chatty at INFO (DispatcherServlet init, Tomcat port, Mongo driver) and bury the service's own
+         lines. Their WARN and ERROR still come through. Outside the profile blocks so no profile can forget them. -->
+    <logger name="org.springframework" level="WARN"/>
+    <logger name="org.mongodb" level="WARN"/>
+    <logger name="org.apache" level="WARN"/>
+
+    <!-- Laptop (SPRING_PROFILES_ACTIVE=local): readable text on the console (kv fields via %kvargs, SLF4J key-value
+         pairs via %kvp), and the same JSON lines as on EKS in ~/.ssp-ming/logs/exchange.json, which the local SigNoz
+         ingester tails with the EKS agent's operator chain (observability/signoz/ingester/ingester.yaml). -->
     <springProfile name="local">
-        <!-- Readable text for Spring's lines. -->
+        <!-- Boot 4.1.2's default console pattern (defaults.xml) with %kvargs %kvp after the message. Copied, so
+             re-check it after a Boot upgrade. Set before the include, which reads CONSOLE_LOG_PATTERN. -->
+        <property name="CONSOLE_LOG_PATTERN" value="%clr(%d{${LOG_DATEFORMAT_PATTERN:-yyyy-MM-dd'T'HH:mm:ss.SSSXXX}}){faint} %clr(${LOG_LEVEL_PATTERN:-%5p}){} %clr(${PID:-}){magenta} %clr(--- %esb(){APPLICATION_NAME}%esb{APPLICATION_GROUP}[%15.15t] ${LOG_CORRELATION_PATTERN:-}){faint}%clr(%-40.40logger{39}){cyan} %clr(:){faint} %m%kvargs %kvp%n${LOG_EXCEPTION_CONVERSION_WORD:-%wEx}"/>
         <include resource="org/springframework/boot/logging/logback/console-appender.xml"/>
 
-        <!-- OTLP push to the local SigNoz (endpoint in application-local.yaml). The appender buffers records until
-             SspExchangeApplication#otlpLogAppenderInstaller hands it the OpenTelemetry SDK. -->
-        <appender name="OTEL" class="io.opentelemetry.instrumentation.logback.appender.v1_0.OpenTelemetryAppender">
-            <captureMdcAttributes>*</captureMdcAttributes>
-        </appender>
-
-        <logger name="AUCTION_EVENTS" level="INFO" additivity="false">
-            <appender-ref ref="AUCTION_JSON"/>
-            <appender-ref ref="OTEL"/>
-        </logger>
-
-        <!-- The OTel SDK's own warnings (e.g. "failed to export" while SigNoz is down) go to the console only.
-             Sent through OTEL they would feed the exporter that is failing. -->
-        <logger name="io.opentelemetry" level="INFO" additivity="false">
-            <appender-ref ref="CONSOLE"/>
-        </logger>
-
-        <root level="INFO">
-            <appender-ref ref="CONSOLE"/>
-            <appender-ref ref="OTEL"/>
-        </root>
-    </springProfile>
-
-    <!-- Cluster and tests: Spring's lines as logstash JSON. A custom logback-spring.xml replaces Boot's
-         own setup, so logging.structured.format.console does nothing here; the encoder is set directly. -->
-    <springProfile name="!local">
-        <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
-            <encoder class="org.springframework.boot.logging.logback.StructuredLogEncoder">
-                <format>logstash</format>
-                <charset>UTF-8</charset>
+        <!-- Rolled archives are .json.gz, so the collector's *.json glob reads only the live file. -->
+        <appender name="JSON_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+            <file>${user.home}/.ssp-ming/logs/exchange.json</file>
+            <rollingPolicy class="ch.qos.logback.core.rolling.FixedWindowRollingPolicy">
+                <fileNamePattern>${user.home}/.ssp-ming/logs/exchange.%i.json.gz</fileNamePattern>
+                <minIndex>1</minIndex>
+                <maxIndex>3</maxIndex>
+            </rollingPolicy>
+            <triggeringPolicy class="ch.qos.logback.core.rolling.SizeBasedTriggeringPolicy">
+                <maxFileSize>50MB</maxFileSize>
+            </triggeringPolicy>
+            <encoder class="com.ming.sspexchange.logging.DslJsonLogbackEncoder">
+                <serviceName>exchange</serviceName>
             </encoder>
         </appender>
 
-        <logger name="AUCTION_EVENTS" level="INFO" additivity="false">
-            <appender-ref ref="AUCTION_JSON"/>
-        </logger>
-
         <root level="INFO">
             <appender-ref ref="CONSOLE"/>
+            <appender-ref ref="JSON_FILE"/>
+        </root>
+    </springProfile>
+
+    <!-- Cluster and tests: every line through the JSON encoder on stdout, tailed by the SigNoz agent. -->
+    <springProfile name="!local">
+        <root level="INFO">
+            <appender-ref ref="JSON_CONSOLE"/>
         </root>
     </springProfile>
 </configuration>

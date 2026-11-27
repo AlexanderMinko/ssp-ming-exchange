@@ -1,5 +1,7 @@
 package com.ming.sspexchange.service.demand;
 
+import static com.ming.sspexchange.logging.LogField.kv;
+
 import java.io.IOException;
 import java.net.http.HttpTimeoutException;
 import java.util.List;
@@ -109,7 +111,7 @@ public class BidderService {
             return result(bidder, isTimeout(exception) ? Reply.TIMEOUT : Reply.ERROR, startNanos);
         } catch (RuntimeException exception) {
             // A DSP sent a body dsl-json can't parse. Isolated so one bidder never breaks the auction.
-            log.debug("bidder {} error: {}", bidder.getName(), exception.toString());
+            log.info("bidder call failed", kv("bidder", bidder.getName()), kv("error", exception.toString()));
             return result(bidder, Reply.ERROR, startNanos);
         }
     }
@@ -122,7 +124,7 @@ public class BidderService {
             return Reply.NO_BID;
         }
         if (!status.is2xxSuccessful()) {
-            log.debug("bidder {} returned {}", bidder.getName(), status.value());
+            log.info("bidder returned an error status", kv("bidder", bidder.getName()), kv("status", status.value()));
             return Reply.ERROR;
         }
         return Reply.of(response.bodyTo(BidResponse.class));

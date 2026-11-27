@@ -36,7 +36,7 @@ public class ExchangeMetrics {
     }
 
     // Requests rejected before an auction runs (invalid ORTB or supply). Answered with 204, kept out of the
-    // AUCTION_EVENTS stream (those are real auctions) but counted so rejects stay observable.
+    // auction log lines (those are real auctions) but counted so rejects stay observable.
     public void reject(RejectReason reason) {
         registry.counter("exchange.reject", "reason", reason.name()).increment();
     }
